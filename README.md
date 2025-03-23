@@ -25,19 +25,3 @@ Poetry is a tool for dependency management and packaging in Python. It allows yo
     ```sh
     poetry --version
     ```
-
-## Troubleshooting
-
-If you encounter the error `The current project could not be installed: No file/folder found for package wasserstein`, you need to:
-
-1. Make sure you have a proper Python package structure with `__init__.py` files
-2. Verify that your pyproject.toml has the correct package configuration
-3. If you don't need to install the current project as a package, use `poetry install --no-root`
-4. If you're only using Poetry for dependency management, set `package-mode = false` in pyproject.toml
-
-## Additional Resources
-
-- [Poetry Documentation](https://python-poetry.org/docs/)
-- [GitHub Repository](https://github.com/python-poetry/poetry)
-
-Now you are ready to use Poetry to manage your Python projects!
