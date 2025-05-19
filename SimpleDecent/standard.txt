@@ -1,0 +1,52 @@
+N: 200, C: 25, p: 0.2, reg: 0, reg_m1: 20, reg_m2: 20, damp: 10000
+EMD: 1.1544265846719455
+{'total_cost': np.float64(15.657237378363941), 'cost': np.float64(0.45585851803029603), 'res':   message: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH
+  success: True
+   status: 0
+      fun: 0.0015657237378363942
+        x: [ 9.413e-06  4.281e-06 ...  3.415e-05  3.701e-05]
+      nit: 1934
+      jac: [-2.761e-06 -3.517e-06 ... -2.519e-06 -2.844e-06]
+     nfev: 2114
+     njev: 2114
+ hess_inv: <19000x19000 LbfgsInvHessProduct with dtype=float64>}
+N: 200, C: 25, p: 0.4, reg: 0, reg_m1: 20, reg_m2: 20, damp: 10000
+EMD: 0.07911710433063619
+{'total_cost': np.float64(7.8079668379064255), 'cost': np.float64(0.6079970423344958), 'res':   message: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH
+  success: True
+   status: 0
+      fun: 0.0007807966837906425
+        x: [ 5.677e-05  6.053e-05 ...  3.224e-05  1.004e-05]
+      nit: 6600
+      jac: [-1.658e-06 -1.522e-06 ... -2.530e-06 -2.360e-06]
+     nfev: 6983
+     njev: 6983
+ hess_inv: <19000x19000 LbfgsInvHessProduct with dtype=float64>}
+N: 200, C: 25, p: 0.6, reg: 0, reg_m1: 20, reg_m2: 20, damp: 10000
+EMD: 1.138255037542954
+{'total_cost': np.float64(1.1895685272800298), 'cost': np.float64(1.140659847709804), 'res':   message: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH
+  success: True
+   status: 0
+      fun: 0.00011895685272800297
+        x: [ 4.515e-06  4.944e-06 ...  3.148e-06  1.871e-05]
+      nit: 2666
+      jac: [-4.210e-06 -4.027e-06 ... -4.167e-06 -5.001e-06]
+     nfev: 2679
+     njev: 2679
+ hess_inv: <19000x19000 LbfgsInvHessProduct with dtype=float64>}
+N: 200, C: 25, p: 0.8, reg: 0, reg_m1: 20, reg_m2: 20, damp: 10000
+EMD: 2.2824119466146158
+{'total_cost': np.float64(13.485535451808657), 'cost': np.float64(1.1974592913161637), 'res':   message: ABNORMAL: 
+  success: False
+   status: 2
+      fun: 0.0013485535451808657
+        x: [ 0.000e+00  0.000e+00 ...  0.000e+00  0.000e+00]
+      nit: 0
+      jac: [-2.034e-03 -2.034e-03 ...  1.964e-03  1.964e-03]
+     nfev: 21
+     njev: 21
+ hess_inv: <19000x19000 LbfgsInvHessProduct with dtype=float64>}
+
+real	3m54,427s
+user	45m57,894s
+sys	0m0,968s

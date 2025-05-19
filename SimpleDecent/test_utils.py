@@ -8,6 +8,7 @@ sys.path.append(os.path.abspath(".."))
 from wasserstein import Spectrum, NMRSpectrum
 from typing import List
 import ot
+import math
 
 
 def multidiagonal_cost(v1, v2, C):
@@ -318,13 +319,13 @@ class UtilsSparse:
         return grad_data
     
     @staticmethod
-    def huber_loss(x, delta=1e-6):
+    def huber_loss(x, delta=1e-8):
         """Huber loss function (smooth approximation of L1)"""
         abs_x = np.abs(x)
         return np.where(abs_x < delta, 0.5 * x**2 / delta, abs_x - 0.5 * delta)
     
     @staticmethod
-    def huber_gradient(x, delta=1e-6):
+    def huber_gradient(x, delta=1e-8):
         """Gradient of Huber loss"""
         return np.where(np.abs(x) < delta, x / delta, np.sign(x))
 
@@ -396,15 +397,15 @@ class UtilsSparse:
 
         # Compute loss
         transport_cost = self.sparse_dot(G_data, self.offsets)
-        marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
-        # marginal_penalty = self.marg_tv_sparse_huber(G_data, self.offsets)
+        # marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
+        marginal_penalty = self.marg_tv_sparse_huber(G_data, self.offsets)
         val = transport_cost + marginal_penalty
         if self.reg > 0:
             val += self.reg_kl_sparse(G_data, self.offsets)
         
         # Compute gradient
-        grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
-        # grad = self.data + self.grad_marg_tv_sparse_huber(G_data, self.offsets)
+        # grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
+        grad = self.data + self.grad_marg_tv_sparse_huber(G_data, self.offsets)
         
         # Combine gradients
         grad_flat = np.zeros_like(G_flat)
@@ -413,20 +414,6 @@ class UtilsSparse:
             grad += self.grad_kl_sparse(G_data, self.offsets)
 
         grad_flat = flatten_multidiagonal(grad, self.offsets)
-
-        # for i, offset in enumerate(self.offsets):
-        #     # Transport cost gradient (M)
-        #     grad_flat[ptr:ptr+self.m] += self.data[i][:self.m]
-            
-        #     # Marginal penalty gradient
-        #     grad_flat[ptr:ptr+self.m] += grad_marg[i][:self.m]
-            
-        #     # KL divergence gradient if needed
-        #     if self.reg > 0:
-        #         grad_kl_diag = self.grad_kl_sparse(G_data, self.offsets)[i][:self.m]
-        #         grad_flat[ptr:ptr+self.m] += self.reg * grad_kl_diag
-            
-        #     ptr += self.m
         
         return val, grad_flat
     
@@ -446,17 +433,17 @@ class UtilsSparse:
             method="L-BFGS-B",
             jac=True,
             bounds=Bounds(0, np.inf),
-            # tol=stopThr,
+            tol=stopThr,
             options={
-                'ftol': 1e-12, 
-                'gtol': 1e-8,
+                # 'ftol': 1e-12, 
+                # 'gtol': 1e-8,
                 'maxiter': numItermax
             }
         )
 
-        G = reconstruct_multidiagonal(res.x, self.G0_sparse.offsets, self.m)
+        G = reconstruct_multidiagonal(res.x, self.G0_sparse.offsets, self.m) * self.damp
 
-        log = {"total_cost": res.fun * self.damp, "cost": self.sparse_dot(G, self.offsets) * self.damp, "res": res}
+        log = {"total_cost": res.fun * self.damp, "cost": self.sparse_dot(G, self.offsets), "res": res}
         return G, log
     
 
@@ -534,8 +521,6 @@ class UtilsDense:
     
 
 def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp, max_iter):
-    # for now
-
     print(f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}, damp: {damp}")
 
     spectra, mix = load_data()
@@ -558,11 +543,18 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp, max_iter):
     M = multidiagonal_cost(v1, v2, C)
     G0 = warmstart_sparse(a, b, C)
 
-    reg = 0.01
+    # reg = 0.01
     c = G0
 
     sparse = UtilsSparse(a, b, c, G0, M, reg, reg_m1, reg_m2, damp)
-    _, log_s = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    G, log_s = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    G /= damp
+    transport_cost = sparse.sparse_dot(G, sparse.offsets)
+    marginal_penalty = sparse.marg_tv_sparse_huber(G, sparse.offsets)
+    print("Transport cost: ", transport_cost * damp)
+    print("Marginal penalty: ", marginal_penalty * damp)
+    val, _ = sparse.func_sparse(flatten_multidiagonal(G, sparse.offsets))
+    print("Value: ", val * damp)
 
     print(log_s)
 
@@ -570,11 +562,11 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp, max_iter):
 def main():
     np.random.seed(420)
 
-    N = 6
+    N = 200
 
     v1 = np.random.rand(N)
     v2 = np.random.rand(N)
-    C = 3  # Bandwidth
+    C = 25  # Bandwidth
     M_sparse = multidiagonal_cost(v1, v2, C)
     M = M_sparse.toarray()
 
@@ -613,13 +605,21 @@ def main():
     # print("M_data: ", M_data)
     # print("M_sparse data: ", M_sparse.data)
 
-
-
     sparse = UtilsSparse(a, b, c, G0_sparse, M_sparse, reg, reg_m1, reg_m2, damp=1)
     dense = UtilsDense(a, b, c, G0, M, reg, reg_m1, reg_m2)
 
+    def float_lists_equal(list1, list2, rel_tol=1e-9, abs_tol=1e-9):
+        if len(list1) != len(list2):
+            return False
+        return all(math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol) 
+            for a, b in zip(list1, list2))
+    
+    flat = flatten_multidiagonal(Gtest_data, sparse.offsets)
+    flat2 = flatten_multidiagonal(reconstruct_multidiagonal(flat, sparse.offsets, N), sparse.offsets)
+    
+    print(float_lists_equal(flat, flat2, rel_tol=1e-9, abs_tol=1e-9))
     # dense.reg_kl(Gtest)
-    print(sparse.reg_kl_sparse(G0_sparse.data, G0_sparse.offsets))
+    # print(sparse.reg_kl_sparse(G0_sparse.data, G0_sparse.offsets))
 
     # _, log_s = sparse.lbfgsb_unbalanced()
     # _, log_d = dense.lbfgsb_unbalanced()
@@ -660,8 +660,8 @@ if __name__ == "__main__":
     #     damp = 1
     #     print(f"Testing reg_m: {reg_m}, damp: {damp}")
     #     test_sparse(10000, 20, 0.5, reg_m, reg_m, damp, 1000)
-    test_sparse(200, 25, 0.2, 0, 10, 10, 10000, 15000)
-    test_sparse(200, 25, 0.4, 0, 10, 10, 10000, 15000)
-    test_sparse(200, 25, 0.6, 0, 10, 10, 10000, 15000)
-    test_sparse(200, 25, 0.8, 0, 10, 10, 10000, 15000)
+    test_sparse(300, 30, 0.2, 0.01, 10, 10, 1, 15000)
+    test_sparse(300, 30, 0.4, 0.01, 10, 10, 1, 15000)
+    test_sparse(300, 30, 0.6, 0.01, 10, 10, 1, 15000)
+    test_sparse(300, 30, 0.8, 0.01, 10, 10, 1, 15000)
     # main()
