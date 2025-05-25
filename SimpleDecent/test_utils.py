@@ -51,6 +51,38 @@ def multidiagonal_cost(v1, v2, C):
     return dia_matrix((data, offsets), shape=(n, n))
 
 
+def reg_distribiution(N, C):
+    """
+    Construct a multidiagonal sparse matrix where M[i,j] = abs(v1[i] - v2[j]) if abs(i-j) < C.
+    
+    Parameters:
+    v1, v2 (array-like): Input vectors (must be same length)
+    C (int): Bandwidth parameter controlling how many diagonals are non-zero
+    
+    Returns:
+    dia_matrix: The constructed sparse matrix in DIAgonal format
+    """
+    
+    offsets = np.arange(-C + 1, C)  # Diagonals from -C+1 to C-1
+    
+    data = []
+    for k in offsets:
+        diag_values = np.array([1 / (N * (2 * C - 1) - C * (C - 1))] * (N - np.abs(k)))
+        
+        # Pad to ensure the diagonal has length `n`
+        if k < 0:
+            # Lower diagonal: pad at the end
+            diag_values_padded = np.pad(diag_values, (0, np.abs(k)), mode='constant')
+        else:
+            # Upper diagonal: pad at the beginning
+            diag_values_padded = np.pad(diag_values, (np.abs(k), 0), mode='constant')
+        
+        data.append(diag_values_padded)
+    
+    data = np.array(data)
+    return dia_matrix((data, offsets), shape=(N, N))
+
+
 def warmstart_sparse(p1, p2, C):
     """
     Create a warm-start sparse multidiagonal transport plan where:
@@ -74,8 +106,7 @@ def warmstart_sparse(p1, p2, C):
     # Create storage for diagonals with proper padding
     diagonals = {}
     for offset in offsets:
-        diag_len = n - abs(offset)
-        diagonals[offset] = np.zeros(diag_len)
+        diagonals[offset] = np.zeros(n)
     
     for i in range(n):
         remaining_mass = p1[i]
@@ -88,37 +119,27 @@ def warmstart_sparse(p1, p2, C):
         # Step 2: Distribute remaining mass to adjacent cells
         radius = 1
         while remaining_mass > 1e-10 and radius < C:
+            # Right neighbor (i, i+radius)
+            if i + radius < n:
+                idx = i + radius
+                assign = min(remaining_mass, p2[idx])
+                diagonals[radius][idx] += assign
+                remaining_mass -= assign
+
             # Left neighbor (i, i-radius)
-            if i - radius >= 0:
+            if i - radius >= 0 and remaining_mass > 1e-10:
                 idx = i - radius
                 assign = min(remaining_mass, p2[idx])
                 diagonals[-radius][idx] += assign
                 remaining_mass -= assign
             
-            # Right neighbor (i, i+radius)
-            if i + radius < n and remaining_mass > 1e-10:
-                assign = min(remaining_mass, p2[i + radius])
-                diagonals[radius][i] += assign
-                remaining_mass -= assign
-            
             radius += 1
     
-    # Pad diagonals to equal length for dia_matrix
-    padded_data = []
-    for offset in offsets:
-        diag = diagonals[offset]
-        if offset < 0:
-            # Lower diagonal: pad at end
-            padded = np.pad(diag, (0, -offset), 'constant')
-        elif offset > 0:
-            # Upper diagonal: pad at beginning
-            padded = np.pad(diag, (offset, 0), 'constant')
-        else:
-            # Main diagonal: no padding needed
-            padded = diag
-        padded_data.append(padded)
+    diagonals = [diagonals[offset] for offset in offsets]
+    sum = np.sum(diagonals)
+    diagonals /= sum
     
-    return dia_matrix((np.array(padded_data), offsets), shape=(n, n))
+    return dia_matrix((np.array(diagonals), offsets), shape=(n, n))
 
 
 def load_data():
@@ -214,7 +235,7 @@ class UtilsSparse:
     def __init__(self, a, b, c, G0_sparse, M_sparse, reg, reg_m1, reg_m2, damp):
         self.a = a
         self.b = b
-        self.c = c
+        self.c_data = c.data
         self.m, self.n = M_sparse.shape
 
         assert self.m == self.n, "Only square multidiagonal matrices supported"
@@ -223,11 +244,6 @@ class UtilsSparse:
         self.G0_sparse = G0_sparse
         self.offsets = M_sparse.offsets
         self.data = M_sparse.data
-
-        if issparse(c):
-            self.c_diag = c.diagonal()
-        else:
-            self.c_diag = np.asarray(c).reshape(-1)
 
         self.reg = reg
         self.reg_m1 = reg_m1
@@ -269,54 +285,68 @@ class UtilsSparse:
             col_sums += diag
         return col_sums
 
-    def reg_kl_sparse(self, G_data, G_offsets):
-        """KL divergence regularization for sparse matrix"""
-        kl_sum = 0.0
-        total_mass = 0.0
+    # def reg_kl_sparse2(self, G_data, G_offsets):
+    #     """KL divergence regularization for sparse matrix"""
+    #     kl_sum = 0.0
+    #     total_mass = 0.0
         
-        for j, offset in enumerate(G_offsets):
-            diag = G_data[j]
-            if offset == 0:  # Main diagonal
-                idx = np.arange(self.m)
-            elif offset < 0:  # Lower diagonal
-                idx = np.arange(-offset, self.m)
-            else:  # Upper diagonal
-                idx = np.arange(0, self.m-offset)
+    #     for j, offset in enumerate(G_offsets):
+    #         diag = G_data[j]
+    #         if offset == 0:  # Main diagonal
+    #             idx = np.arange(self.m)
+    #         elif offset < 0:  # Lower diagonal
+    #             idx = np.arange(-offset, self.m)
+    #         else:  # Upper diagonal
+    #             idx = np.arange(0, self.m-offset)
             
-            c_values = self.c_diag[idx]
-            with np.errstate(divide='ignore', invalid='ignore'):
-                kl_terms = diag[:len(idx)] * np.log(diag[:len(idx)] / c_values + 1e-16)
-                kl_terms = np.nan_to_num(kl_terms, nan=0.0, posinf=0.0, neginf=0.0)
-                kl_sum += np.sum(kl_terms)
-                total_mass += np.sum(diag[:len(idx)])
+    #         c_values = self.c_diag[idx]
+    #         with np.errstate(divide='ignore', invalid='ignore'):
+    #             kl_terms = diag[:len(idx)] * np.log(diag[:len(idx)] / c_values + 1e-16)
+    #             kl_terms = np.nan_to_num(kl_terms, nan=0.0, posinf=0.0, neginf=0.0)
+    #             kl_sum += np.sum(kl_terms)
+    #             total_mass += np.sum(diag[:len(idx)])
         
-        return self.reg * (kl_sum - total_mass + np.sum(self.c_diag))
+    #     return self.reg * (kl_sum - total_mass + np.sum(self.c_diag))
+    
+    def reg_kl_sparse(self, G_data, G_offsets):
+        G_flat = flatten_multidiagonal(G_data, G_offsets)
+        C_flat = flatten_multidiagonal(self.c_data, G_offsets)
 
+        return np.sum(G_flat * np.log(G_flat / C_flat + 1e-16)) + np.sum(C_flat - G_flat)
+
+    # def grad_kl_sparse(self, G_data, G_offsets):
+    #     """Gradient of KL divergence for sparse matrix"""
+    #     grad_data = []
+    #     for j, offset in enumerate(G_offsets):
+    #         diag = G_data[j]
+    #         if offset == 0:  # Main diagonal
+    #             idx = np.arange(self.m)
+    #         elif offset < 0:  # Lower diagonal
+    #             idx = np.arange(-offset, self.m)
+    #         else:  # Upper diagonal
+    #             idx = np.arange(0, self.m-offset)
+            
+    #         c_values = self.c_diag[idx]
+    #         grad_diag = np.log(diag[:len(idx)] / c_values + 1e-16)
+    #         grad_diag = np.nan_to_num(grad_diag, nan=0.0, posinf=0.0, neginf=0.0)
+            
+    #         # Pad to original diagonal length
+    #         if offset < 0:
+    #             grad_diag = np.pad(grad_diag, (0, -offset), 'constant')
+    #         elif offset > 0:
+    #             grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
+            
+    #         grad_data.append(self.reg * grad_diag)
+        
+    #     return grad_data
+    
     def grad_kl_sparse(self, G_data, G_offsets):
         """Gradient of KL divergence for sparse matrix"""
-        grad_data = []
-        for j, offset in enumerate(G_offsets):
-            diag = G_data[j]
-            if offset == 0:  # Main diagonal
-                idx = np.arange(self.m)
-            elif offset < 0:  # Lower diagonal
-                idx = np.arange(-offset, self.m)
-            else:  # Upper diagonal
-                idx = np.arange(0, self.m-offset)
-            
-            c_values = self.c_diag[idx]
-            grad_diag = np.log(diag[:len(idx)] / c_values + 1e-16)
-            grad_diag = np.nan_to_num(grad_diag, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # Pad to original diagonal length
-            if offset < 0:
-                grad_diag = np.pad(grad_diag, (0, -offset), 'constant')
-            elif offset > 0:
-                grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
-            
-            grad_data.append(self.reg * grad_diag)
-        
-        return grad_data
+        G_flat = flatten_multidiagonal(G_data, G_offsets)
+        C_flat = flatten_multidiagonal(self.c_data, G_offsets)
+
+        grad_flat =  np.log(G_flat / C_flat + 1e-16)
+        return reconstruct_multidiagonal(grad_flat, G_offsets, self.m) * self.reg
     
     @staticmethod
     def huber_loss(x, delta=1e-8):
@@ -329,66 +359,66 @@ class UtilsSparse:
         """Gradient of Huber loss"""
         return np.where(np.abs(x) < delta, x / delta, np.sign(x))
 
-    def marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
-        """Huber-loss marginal penalty for sparse matrix"""
-        row_sums = self.sparse_row_sum(G_data, G_offsets)
-        col_sums = self.sparse_col_sum(G_data, G_offsets)
-        return (self.reg_m1 * np.sum(self.huber_loss(row_sums - self.a, delta))) + \
-                (self.reg_m2 * np.sum(self.huber_loss(col_sums - self.b, delta)))
-
-    def grad_marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
-        """Gradient of Huber marginal penalty"""
-        row_sums = self.sparse_row_sum(G_data, G_offsets)
-        col_sums = self.sparse_col_sum(G_data, G_offsets)
-        
-        # Compute Huber gradient terms
-        row_grad = self.reg_m1 * self.huber_gradient(row_sums - self.a, delta)
-        col_grad = self.reg_m2 * self.huber_gradient(col_sums - self.b, delta)
-        
-        grad_data = []
-        for offset in G_offsets:
-            if offset == 0:  # Main diagonal
-                grad_diag = row_grad + col_grad
-            elif offset < 0:  # Lower diagonal
-                k = -offset
-                grad_diag = row_grad[k:] + col_grad[:self.m - k]
-                grad_diag = np.pad(grad_diag, (0, k), 'constant')
-            else:  # Upper diagonal
-                grad_diag = row_grad[:self.m - offset] + col_grad[offset:]
-                grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
-            grad_data.append(grad_diag)
-        
-        return np.array(grad_data)
-
-    # def marg_tv_sparse(self, G_data, G_offsets):
-    #     """TV marginal penalty for sparse matrix"""
+    # def marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
+    #     """Huber-loss marginal penalty for sparse matrix"""
     #     row_sums = self.sparse_row_sum(G_data, G_offsets)
     #     col_sums = self.sparse_col_sum(G_data, G_offsets)
-    #     return self.reg_m1 * np.sum(np.abs(row_sums - self.a)) + self.reg_m2 * np.sum(np.abs(col_sums - self.b))
+    #     return (self.reg_m1 * np.sum(self.huber_loss(row_sums - self.a, delta))) + \
+    #             (self.reg_m2 * np.sum(self.huber_loss(col_sums - self.b, delta)))
 
-    # def grad_marg_tv_sparse(self, G_data, G_offsets):
-    #     """Gradient of TV marginal penalty"""
+    # def grad_marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
+    #     """Gradient of Huber marginal penalty"""
     #     row_sums = self.sparse_row_sum(G_data, G_offsets)
     #     col_sums = self.sparse_col_sum(G_data, G_offsets)
         
-    #     # Compute sign terms for rows and columns
-    #     row_signs = self.reg_m1 * np.sign(row_sums - self.a)
-    #     col_signs = self.reg_m2 * np.sign(col_sums - self.b)
+    #     # Compute Huber gradient terms
+    #     row_grad = self.reg_m1 * self.huber_gradient(row_sums - self.a, delta)
+    #     col_grad = self.reg_m2 * self.huber_gradient(col_sums - self.b, delta)
         
     #     grad_data = []
     #     for offset in G_offsets:
     #         if offset == 0:  # Main diagonal
-    #             grad_diag = row_signs + col_signs
+    #             grad_diag = row_grad + col_grad
     #         elif offset < 0:  # Lower diagonal
     #             k = -offset
-    #             grad_diag = row_signs[k:] + col_signs[:self.m - k]
+    #             grad_diag = row_grad[k:] + col_grad[:self.m - k]
     #             grad_diag = np.pad(grad_diag, (0, k), 'constant')
     #         else:  # Upper diagonal
-    #             grad_diag = row_signs[:self.m - offset] + col_signs[offset:]
+    #             grad_diag = row_grad[:self.m - offset] + col_grad[offset:]
     #             grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
     #         grad_data.append(grad_diag)
         
     #     return np.array(grad_data)
+
+    def marg_tv_sparse(self, G_data, G_offsets):
+        """TV marginal penalty for sparse matrix"""
+        row_sums = self.sparse_row_sum(G_data, G_offsets)
+        col_sums = self.sparse_col_sum(G_data, G_offsets)
+        return self.reg_m1 * np.sum(np.abs(row_sums - self.a)) + self.reg_m2 * np.sum(np.abs(col_sums - self.b))
+
+    def grad_marg_tv_sparse(self, G_data, G_offsets):
+        """Gradient of TV marginal penalty"""
+        row_sums = self.sparse_row_sum(G_data, G_offsets)
+        col_sums = self.sparse_col_sum(G_data, G_offsets)
+        
+        # Compute sign terms for rows and columns
+        row_signs = self.reg_m1 * np.sign(row_sums - self.a)
+        col_signs = self.reg_m2 * np.sign(col_sums - self.b)
+        
+        grad_data = []
+        for offset in G_offsets:
+            if offset == 0:  # Main diagonal
+                grad_diag = row_signs + col_signs
+            elif offset < 0:  # Lower diagonal
+                k = -offset
+                grad_diag = row_signs[k:] + col_signs[:self.m - k]
+                grad_diag = np.pad(grad_diag, (0, k), 'constant')
+            else:  # Upper diagonal
+                grad_diag = row_signs[:self.m - offset] + col_signs[offset:]
+                grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
+            grad_data.append(grad_diag)
+        
+        return np.array(grad_data)
 
     def func_sparse(self, G_flat):
         """Combined loss function and gradient for sparse optimization"""
@@ -397,15 +427,15 @@ class UtilsSparse:
 
         # Compute loss
         transport_cost = self.sparse_dot(G_data, self.offsets)
-        # marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
-        marginal_penalty = self.marg_tv_sparse_huber(G_data, self.offsets)
+        marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
+        # marginal_penalty = self.marg_tv_sparse_huber(G_data, self.offsets)
         val = transport_cost + marginal_penalty
         if self.reg > 0:
             val += self.reg_kl_sparse(G_data, self.offsets)
         
         # Compute gradient
-        # grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
-        grad = self.data + self.grad_marg_tv_sparse_huber(G_data, self.offsets)
+        grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
+        # grad = self.data + self.grad_marg_tv_sparse_huber(G_data, self.offsets)
         
         # Combine gradients
         grad_flat = np.zeros_like(G_flat)
@@ -418,7 +448,7 @@ class UtilsSparse:
         return val, grad_flat
     
     
-    def lbfgsb_unbalanced(self, numItermax=1000, stopThr=1e-15, verbose=True):
+    def lbfgsb_unbalanced(self, numItermax=1000, stopThr=1e-15):
         _func = self.func_sparse
 
         # panic for now
@@ -435,8 +465,8 @@ class UtilsSparse:
             bounds=Bounds(0, np.inf),
             tol=stopThr,
             options={
-                # 'ftol': 1e-12, 
-                # 'gtol': 1e-8,
+                'ftol': 1e-12, 
+                'gtol': 1e-8,
                 'maxiter': numItermax
             }
         )
@@ -451,7 +481,7 @@ class UtilsDense:
     def __init__(self, a, b, c, G0, M, reg, reg_m1, reg_m2):
         self.a = a
         self.b = b
-        self.c = c
+        self.c = c.toarray()
         self.m, self.n = M.shape
         assert self.m == self.n, "Only square multidiagonal matrices supported"
         assert len(a) == len(b) == self.m, "Marginals must match matrix dimensions"
@@ -506,10 +536,10 @@ class UtilsDense:
             method="L-BFGS-B",
             jac=True,
             bounds=Bounds(0, np.inf),
-            # tol=stopThr,
+            tol=stopThr,
             options={
-                # 'ftol': 1e-12, 
-                # 'gtol': 1e-8,
+                'ftol': 1e-12, 
+                'gtol': 1e-8,
                 'maxiter': numItermax
             }
         )
@@ -543,30 +573,58 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp, max_iter):
     M = multidiagonal_cost(v1, v2, C)
     G0 = warmstart_sparse(a, b, C)
 
-    # reg = 0.01
-    c = G0
+    # print(G0.data)
+    # print(G0.offsets)
+    # print(G0.toarray())
+    # print(a)
+    # print(b)
+
+    c = reg_distribiution(2*N, C)
 
     sparse = UtilsSparse(a, b, c, G0, M, reg, reg_m1, reg_m2, damp)
+    # print(sparse.sparse_row_sum(M.data, M.offsets))
     G, log_s = sparse.lbfgsb_unbalanced(numItermax=max_iter)
     G /= damp
     transport_cost = sparse.sparse_dot(G, sparse.offsets)
-    marginal_penalty = sparse.marg_tv_sparse_huber(G, sparse.offsets)
+    # marginal_penalty = sparse.marg_tv_sparse_huber(G, sparse.offsets)
+    regularization_term = sparse.reg_kl_sparse(G, sparse.offsets)
+    marginal_penalty = sparse.marg_tv_sparse(G, sparse.offsets)
     print("Transport cost: ", transport_cost * damp)
+    print("Regularization term:", regularization_term * damp)
     print("Marginal penalty: ", marginal_penalty * damp)
+    print("Marginal penalty normalized: ", marginal_penalty * damp / reg_m1)
+    print("Final distance: ", (transport_cost + marginal_penalty / reg_m1) * damp)
     val, _ = sparse.func_sparse(flatten_multidiagonal(G, sparse.offsets))
     print("Value: ", val * damp)
-
+    print("G sum: ", np.sum(G))
     print(log_s)
+
+    # validation
+    if not reg > 0:
+        dense = UtilsDense(a, b, c, G0.toarray(), M.toarray(), reg, reg_m1, reg_m2)
+        G_dense = dia_matrix((G * damp, sparse.offsets), shape=(2*N, 2*N)).toarray()
+
+        G_d, log_d = dense.lbfgsb_unbalanced(numItermax=max_iter)
+
+        transport_cost2 = np.sum(G_dense * dense.M)
+        marginal_penalty2 = dense.marg_tv(G_dense)
+        print("Dense trasport cost: ", transport_cost2 * damp)
+        print("Dense marginal penalty: ", marginal_penalty2 * damp)
+        val2, _ = dense.func(G_dense)
+        print("Value: ", val2 * damp)
+        print("Dense sum G: ", np.sum(G_d)) 
+
+        print(log_d)
 
 
 def main():
     np.random.seed(420)
 
-    N = 200
+    N = 10
 
     v1 = np.random.rand(N)
     v2 = np.random.rand(N)
-    C = 25  # Bandwidth
+    C = 3  # Bandwidth
     M_sparse = multidiagonal_cost(v1, v2, C)
     M = M_sparse.toarray()
 
@@ -577,7 +635,7 @@ def main():
     b /= np.sum(b)
 
     # Parameters
-    reg = 0
+    reg = 0.01
     reg_m1 = 0.1
     reg_m2 = 0.1
 
@@ -591,8 +649,9 @@ def main():
     G0_sparse = warmstart_sparse(a, b, C)
     G0_flat = flatten_multidiagonal(G0_sparse.data, G0_sparse.offsets)
     G0 = G0_sparse.toarray()
-    c = G0
-    # print(G0)
+    c = reg_distribiution(N, C)
+    print("c: ", c.toarray())
+    print(np.sum(c.data))
     # print("G0 sparse data: ", G0_sparse.data)
     # print("G0 sparse offsets: ", G0_sparse.offsets)
     # print(G0_sparse.data.ravel())
@@ -608,16 +667,17 @@ def main():
     sparse = UtilsSparse(a, b, c, G0_sparse, M_sparse, reg, reg_m1, reg_m2, damp=1)
     dense = UtilsDense(a, b, c, G0, M, reg, reg_m1, reg_m2)
 
-    def float_lists_equal(list1, list2, rel_tol=1e-9, abs_tol=1e-9):
-        if len(list1) != len(list2):
-            return False
-        return all(math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol) 
-            for a, b in zip(list1, list2))
+    # idenpotency test
+    # def float_lists_equal(list1, list2, rel_tol=1e-9, abs_tol=1e-9):
+    #     if len(list1) != len(list2):
+    #         return False
+    #     return all(math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol) 
+    #         for a, b in zip(list1, list2))
     
-    flat = flatten_multidiagonal(Gtest_data, sparse.offsets)
-    flat2 = flatten_multidiagonal(reconstruct_multidiagonal(flat, sparse.offsets, N), sparse.offsets)
+    # flat = flatten_multidiagonal(Gtest_data, sparse.offsets)
+    # flat2 = flatten_multidiagonal(reconstruct_multidiagonal(flat, sparse.offsets, N), sparse.offsets)
     
-    print(float_lists_equal(flat, flat2, rel_tol=1e-9, abs_tol=1e-9))
+    # print(float_lists_equal(flat, flat2, rel_tol=1e-9, abs_tol=1e-9))
     # dense.reg_kl(Gtest)
     # print(sparse.reg_kl_sparse(G0_sparse.data, G0_sparse.offsets))
 
@@ -632,12 +692,14 @@ def main():
 
     # print("Dense row sum:  ", Gtest.sum(axis=1))
     # print("Dense col sum:  ", Gtest.sum(axis=0))
-    # print("Sparse row sum: ", sparse.sparse_row_sum(Gtest_data, Gtest_offsets))
+    # print("Sparse row sum: ", sparse.sparse_row_sum(G0_sparse.data, G0_sparse.offsets))
     # print("Sparse col sum: ", sparse.sparse_col_sum(Gtest_data, Gtest_offsets))
 
     # print(sparse.marg_tv_sparse(Gtest_data, Gtest_offsets))
     # print(dense.marg_tv(Gtest))
     # assert np.isclose(sparse.marg_tv_sparse(Gtest_data, Gtest_offsets), dense.marg_tv(Gtest))
+    # print(sparse.reg_kl_sparse(Gtest_data, Gtest_offsets), dense.reg_kl(Gtest))
+    # assert np.isclose(sparse.reg_kl_sparse(Gtest_data, Gtest_offsets), dense.reg_kl(Gtest))
 
     # print(dense.grad_marg_tv(Gtest))
     # print(sparse.grad_marg_tv_sparse(Gtest_data, Gtest_offsets))
@@ -660,8 +722,8 @@ if __name__ == "__main__":
     #     damp = 1
     #     print(f"Testing reg_m: {reg_m}, damp: {damp}")
     #     test_sparse(10000, 20, 0.5, reg_m, reg_m, damp, 1000)
-    test_sparse(300, 30, 0.2, 0.01, 10, 10, 1, 15000)
-    test_sparse(300, 30, 0.4, 0.01, 10, 10, 1, 15000)
-    test_sparse(300, 30, 0.6, 0.01, 10, 10, 1, 15000)
-    test_sparse(300, 30, 0.8, 0.01, 10, 10, 1, 15000)
+    test_sparse(20, 5, 0.2, 0.01, 1000.5, 1000.5, 1, 5000)
+    test_sparse(20, 5, 0.4, 0.01, 1000.5, 1000.5, 1, 5000)
+    test_sparse(20, 5, 0.6, 0.01, 1000.5, 1000.5, 1, 5000)
+    test_sparse(20, 5, 0.8, 0.01, 1000.5, 1000.5, 1, 5000)
     # main()
