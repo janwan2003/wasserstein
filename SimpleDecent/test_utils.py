@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.sparse import dia_matrix, issparse
+from scipy.sparse import dia_matrix
 from scipy.optimize import minimize, Bounds
 from ot.backend import get_backend
 import sys
@@ -8,7 +8,6 @@ sys.path.append(os.path.abspath(".."))
 from wasserstein import Spectrum, NMRSpectrum
 from typing import List
 import ot
-import math
 
 
 def multidiagonal_cost(v1, v2, C):
@@ -284,61 +283,12 @@ class UtilsSparse:
         for diag in G_data:
             col_sums += diag
         return col_sums
-
-    # def reg_kl_sparse2(self, G_data, G_offsets):
-    #     """KL divergence regularization for sparse matrix"""
-    #     kl_sum = 0.0
-    #     total_mass = 0.0
-        
-    #     for j, offset in enumerate(G_offsets):
-    #         diag = G_data[j]
-    #         if offset == 0:  # Main diagonal
-    #             idx = np.arange(self.m)
-    #         elif offset < 0:  # Lower diagonal
-    #             idx = np.arange(-offset, self.m)
-    #         else:  # Upper diagonal
-    #             idx = np.arange(0, self.m-offset)
-            
-    #         c_values = self.c_diag[idx]
-    #         with np.errstate(divide='ignore', invalid='ignore'):
-    #             kl_terms = diag[:len(idx)] * np.log(diag[:len(idx)] / c_values + 1e-16)
-    #             kl_terms = np.nan_to_num(kl_terms, nan=0.0, posinf=0.0, neginf=0.0)
-    #             kl_sum += np.sum(kl_terms)
-    #             total_mass += np.sum(diag[:len(idx)])
-        
-    #     return self.reg * (kl_sum - total_mass + np.sum(self.c_diag))
     
     def reg_kl_sparse(self, G_data, G_offsets):
         G_flat = flatten_multidiagonal(G_data, G_offsets)
         C_flat = flatten_multidiagonal(self.c_data, G_offsets)
 
         return np.sum(G_flat * np.log(G_flat / C_flat + 1e-16)) + np.sum(C_flat - G_flat)
-
-    # def grad_kl_sparse(self, G_data, G_offsets):
-    #     """Gradient of KL divergence for sparse matrix"""
-    #     grad_data = []
-    #     for j, offset in enumerate(G_offsets):
-    #         diag = G_data[j]
-    #         if offset == 0:  # Main diagonal
-    #             idx = np.arange(self.m)
-    #         elif offset < 0:  # Lower diagonal
-    #             idx = np.arange(-offset, self.m)
-    #         else:  # Upper diagonal
-    #             idx = np.arange(0, self.m-offset)
-            
-    #         c_values = self.c_diag[idx]
-    #         grad_diag = np.log(diag[:len(idx)] / c_values + 1e-16)
-    #         grad_diag = np.nan_to_num(grad_diag, nan=0.0, posinf=0.0, neginf=0.0)
-            
-    #         # Pad to original diagonal length
-    #         if offset < 0:
-    #             grad_diag = np.pad(grad_diag, (0, -offset), 'constant')
-    #         elif offset > 0:
-    #             grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
-            
-    #         grad_data.append(self.reg * grad_diag)
-        
-    #     return grad_data
     
     def grad_kl_sparse(self, G_data, G_offsets):
         """Gradient of KL divergence for sparse matrix"""
@@ -347,48 +297,6 @@ class UtilsSparse:
 
         grad_flat =  np.log(G_flat / C_flat + 1e-16)
         return reconstruct_multidiagonal(grad_flat, G_offsets, self.m) * self.reg
-    
-    @staticmethod
-    def huber_loss(x, delta=1e-8):
-        """Huber loss function (smooth approximation of L1)"""
-        abs_x = np.abs(x)
-        return np.where(abs_x < delta, 0.5 * x**2 / delta, abs_x - 0.5 * delta)
-    
-    @staticmethod
-    def huber_gradient(x, delta=1e-8):
-        """Gradient of Huber loss"""
-        return np.where(np.abs(x) < delta, x / delta, np.sign(x))
-
-    # def marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
-    #     """Huber-loss marginal penalty for sparse matrix"""
-    #     row_sums = self.sparse_row_sum(G_data, G_offsets)
-    #     col_sums = self.sparse_col_sum(G_data, G_offsets)
-    #     return (self.reg_m1 * np.sum(self.huber_loss(row_sums - self.a, delta))) + \
-    #             (self.reg_m2 * np.sum(self.huber_loss(col_sums - self.b, delta)))
-
-    # def grad_marg_tv_sparse_huber(self, G_data, G_offsets, delta=1e-6):
-    #     """Gradient of Huber marginal penalty"""
-    #     row_sums = self.sparse_row_sum(G_data, G_offsets)
-    #     col_sums = self.sparse_col_sum(G_data, G_offsets)
-        
-    #     # Compute Huber gradient terms
-    #     row_grad = self.reg_m1 * self.huber_gradient(row_sums - self.a, delta)
-    #     col_grad = self.reg_m2 * self.huber_gradient(col_sums - self.b, delta)
-        
-    #     grad_data = []
-    #     for offset in G_offsets:
-    #         if offset == 0:  # Main diagonal
-    #             grad_diag = row_grad + col_grad
-    #         elif offset < 0:  # Lower diagonal
-    #             k = -offset
-    #             grad_diag = row_grad[k:] + col_grad[:self.m - k]
-    #             grad_diag = np.pad(grad_diag, (0, k), 'constant')
-    #         else:  # Upper diagonal
-    #             grad_diag = row_grad[:self.m - offset] + col_grad[offset:]
-    #             grad_diag = np.pad(grad_diag, (offset, 0), 'constant')
-    #         grad_data.append(grad_diag)
-        
-    #     return np.array(grad_data)
 
     def marg_tv_sparse(self, G_data, G_offsets):
         """TV marginal penalty for sparse matrix"""
@@ -428,14 +336,12 @@ class UtilsSparse:
         # Compute loss
         transport_cost = self.sparse_dot(G_data, self.offsets)
         marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
-        # marginal_penalty = self.marg_tv_sparse_huber(G_data, self.offsets)
         val = transport_cost + marginal_penalty
         if self.reg > 0:
             val += self.reg_kl_sparse(G_data, self.offsets)
         
         # Compute gradient
         grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
-        # grad = self.data + self.grad_marg_tv_sparse_huber(G_data, self.offsets)
         
         # Combine gradients
         grad_flat = np.zeros_like(G_flat)
@@ -528,7 +434,6 @@ class UtilsDense:
         _func = self.func
 
         G0 = self.a[:, None] * self.b[None, :] if self.G0 is None else self.G0
-        # c = self.a[:, None] * self.b[None, :] if self.c is None else self.c
 
         res = minimize(
             _func,
