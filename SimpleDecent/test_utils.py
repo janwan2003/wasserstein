@@ -468,6 +468,62 @@ class UtilsSparse:
         }
         return G, log
 
+    def mirror_descent_unbalanced(self, numItermax=1000, step_size=0.1, stopThr=1e-9):
+        """
+        Solves the unbalanced OT problem using mirror descent with exponential updates.
+
+        Parameters:
+            numItermax (int): Maximum number of iterations
+            step_size (float): Fixed step size for gradient updates
+            stopThr (float): Stopping threshold for relative change in objective
+
+        Returns:
+            tuple: (G, log) where G is the optimal transport plan and log contains information about the optimization
+        """
+        if self.G0_sparse is None:
+            raise ValueError("Initial transport plan 'G0' must be provided")
+
+        G_offsets = self.G0_sparse.offsets.copy()
+        G_flat = flatten_multidiagonal(self.G0_sparse.data, G_offsets)
+
+        val_prev, grad_flat = self.func_sparse(G_flat)
+
+        log = {
+            "loss": [val_prev * self.damp],
+            "step_sizes": [step_size],
+        }
+
+        for i in range(numItermax):
+            grad_flat_clipped = np.clip(grad_flat, -100, 100)
+            G_flat_new = G_flat * np.exp(-step_size * grad_flat_clipped)
+            G_flat_new = np.maximum(G_flat_new, 1e-15)
+
+            val_new, grad_flat_new = self.func_sparse(G_flat_new)
+
+            rel_change = abs(val_new - val_prev) / max(abs(val_prev), 1e-10)
+            log["loss"].append(val_new * self.damp)
+            log["step_sizes"].append(step_size)
+
+            if rel_change < stopThr:
+                log["convergence"] = True
+                log["iterations"] = i + 1
+                G_flat = G_flat_new
+                break
+
+            G_flat = G_flat_new
+            grad_flat = grad_flat_new
+            val_prev = val_new
+
+        else:
+            log["convergence"] = False
+            log["iterations"] = numItermax
+
+        G = reconstruct_multidiagonal(G_flat, G_offsets, self.m) * self.damp
+        log["total_cost"] = val_prev * self.damp
+        log["cost"] = self.sparse_dot(G, G_offsets)
+
+        return G, log
+
 
 class UtilsDense:
     """
@@ -655,59 +711,221 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp=1, max_iter=5000, debug=False
         print(log_d)
 
 
-def run_timing_experiment():
+def test_sparse_mirror_descent(
+    N,
+    C,
+    p,
+    reg,
+    reg_m1,
+    reg_m2,
+    damp=1,
+    max_iter=5000,
+    step_size=0.1,
+    debug=False,
+    warmstart=None,
+):
     """
-    Run timing experiments for the sparse optimization algorithm with different matrix sizes.
-    Analyzes the computational complexity based on timing results.
+    Test the sparse optimization algorithm using mirror descent on NMR spectra.
+
+    Parameters:
+        N (int): Number of features to use for each component
+        C (int): Bandwidth parameter
+        p (float): Mixing ratio for the first component
+        reg (float): KL regularization strength
+        reg_m1 (float): Source marginal regularization
+        reg_m2 (float): Target marginal regularization
+        damp (float): Damping parameter
+        max_iter (int): Maximum number of iterations
+        step_size (float): Initial step size for mirror descent
+        adaptive_step (bool): Whether to use adaptive step size
+        debug (bool): Whether to print debug information
+
+    Returns:
+        None
     """
+    spectra, mix = load_data()
 
-    # Fixed parameters
-    C = 15
-    p = 0.46
-    reg = 0.01
-    reg_a, reg_b = 22, 25
-    max_iter = 5000
+    mix_og = signif_features(mix, 2 * N)
 
-    # Values of N to test
-    n_values = [40, 100, 200, 400, 800, 1200, 1600, 2000]
-    times = []
+    ratio = np.array([p, 1 - p])
+    mix_aprox = Spectrum.ScalarProduct(
+        [signif_features(spectra[0], N), signif_features(spectra[1], N)], ratio
+    )
+    mix_aprox.normalize()
 
-    print("\nTiming Experiment Results:")
-    print("N\tTime (seconds)")
-    print("-" * 30)
+    a = np.array([p for _, p in mix_og.confs])
+    b = np.array([p for _, p in mix_aprox.confs])
 
-    for N in n_values:
-        start_time = time.time()
-        test_sparse(N, C, p, reg, reg_a, reg_b, max_iter=max_iter)
-        end_time = time.time()
+    v1 = np.array([v for v, _ in mix_og.confs])
+    v2 = np.array([v for v, _ in mix_aprox.confs])
 
-        elapsed_time = end_time - start_time
-        times.append(elapsed_time)
+    M = multidiagonal_cost(v1, v2, C)
+    if warmstart is None:
+        warmstart = warmstart_sparse(a, b, C)
+    print("Warmstart shape: ", warmstart.shape)
+    c = reg_distribiution(2 * N, C)
 
-        print(f"{N}\t{elapsed_time:.4f}")
+    sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2, damp)
 
-    # Analyze complexity
-    log_n = np.log(n_values)
-    log_t = np.log(times)
+    # Use mirror descent instead of L-BFGS-B
+    start_time = time.time()
+    G, log_s = sparse.mirror_descent_unbalanced(
+        numItermax=max_iter, step_size=step_size
+    )
+    end_time = time.time()
 
-    # Linear regression to fit power function
-    coeffs = np.polyfit(log_n, log_t, 1)
-    b = coeffs[0]  # Exponent
-    a = np.exp(coeffs[1])  # Coefficient
+    transport_cost = sparse.sparse_dot(G, sparse.offsets)
+    regularization_term = sparse.reg_kl_sparse(G, sparse.offsets)
+    marginal_penalty = sparse.marg_tv_sparse(G, sparse.offsets)
+    final_distance = transport_cost + marginal_penalty / (reg_m1 + reg_m2) * damp
+    log_s["final_distance"] = final_distance
+    if debug:
+        emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
+        print(f"EMD: {emd}")
+        print(
+            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}, damp: {damp}"
+        )
+        print("Optimization method: Mirror Descent")
+        print(f"Iterations: {log_s.get('iterations', max_iter)}")
+        print(f"Converged: {log_s.get('convergence', False)}")
+        print(f"Time taken: {end_time - start_time:.4f} seconds")
+        print("Transport cost: ", transport_cost * damp)
+        print("Regularization term:", regularization_term * damp)
+        print("Marginal penalty: ", marginal_penalty * damp)
+        print(
+            "Marginal penalty normalized: ", marginal_penalty * damp / (reg_m1 + reg_m2)
+        )
+        print(
+            "Final distance: ",
+            (transport_cost + marginal_penalty / (reg_m1 + reg_m2) * damp),
+        )
+        print("G sum: ", np.sum(G))
 
-    print("\nComplexity Analysis:")
-    print(f"Estimated complexity: O(N^{b:.2f})")
-    print(f"Fitted function: time ≈ {a:.6f} * N^{b:.2f}")
+        # If we have loss history, we can print it or plot it
+        if "loss" in log_s and len(log_s["loss"]) > 0:
+            print(f"Initial loss: {log_s['loss'][0]}")
+            print(f"Final loss: {log_s['loss'][-1]}")
+            print(f"Loss reduction: {log_s['loss'][0] - log_s['loss'][-1]}")
 
-    # Interpret complexity
-    if 0.8 <= b <= 1.2:
-        print("Approximately linear complexity O(N)")
-    elif 1.8 <= b <= 2.2:
-        print("Approximately quadratic complexity O(N²)")
-    elif 2.8 <= b <= 3.2:
-        print("Approximately cubic complexity O(N³)")
-    else:
-        print(f"Complexity of O(N^{b:.2f})")
+    return G, log_s
+
+
+def test_ws_distance(
+    N,
+    C,
+    p,
+    reg,
+    reg_m1,
+    reg_m2,
+    damp=1,
+    max_iter=5000,
+    step_size=0.1,
+    debug=False,
+):
+    """
+    Test the sparse optimization algorithm using mirror descent on NMR spectra.
+
+    Parameters:
+        N (int): Number of features to use for each component
+        C (int): Bandwidth parameter
+        p (float): Mixing ratio for the first component
+        reg (float): KL regularization strength
+        reg_m1 (float): Source marginal regularization
+        reg_m2 (float): Target marginal regularization
+        damp (float): Damping parameter
+        max_iter (int): Maximum number of iterations
+        step_size (float): Initial step size for mirror descent
+        adaptive_step (bool): Whether to use adaptive step size
+        debug (bool): Whether to print debug information
+
+    Returns:
+        None
+    """
+    spectra, mix = load_data()
+
+    mix_og = signif_features(mix, 2 * N)
+
+    ratio = np.array([p, 1 - p])
+    mix_aprox = Spectrum.ScalarProduct(
+        [signif_features(spectra[0], N), signif_features(spectra[1], N)], ratio
+    )
+    mix_aprox.normalize()
+
+    return mix_og.WSDistance(mix_aprox)
+
+
+# ------------------------------------------------------------------------------
+# Parameter Tuning Functions
+# ------------------------------------------------------------------------------
+
+
+def find_optimal_reg():
+    # 1.5 co ciekawe
+    N, C, p = 400, 15, 0.46
+    reg_a = reg_b = 22
+    max_iter = 2000
+
+    low, high = 0.001, 10
+    best_reg, best_cost = None, float("inf")
+
+    for _ in range(10):
+        mid1 = low + (high - low) / 3
+        mid2 = high - (high - low) / 3
+
+        _, log1 = test_sparse_mirror_descent(
+            N, C, p, mid1, reg_a, reg_b, max_iter=max_iter, step_size=0.002
+        )
+        _, log2 = test_sparse_mirror_descent(
+            N, C, p, mid2, reg_a, reg_b, max_iter=max_iter, step_size=0.002
+        )
+
+        cost1 = log1["final_distance"]
+        cost2 = log2["final_distance"]
+
+        if cost1 < cost2:
+            high = mid2
+            if cost1 < best_cost:
+                best_reg, best_cost = mid1, cost1
+        else:
+            low = mid1
+            if cost2 < best_cost:
+                best_reg, best_cost = mid2, cost2
+
+    print(f"Optimal reg: {best_reg}, Cost: {best_cost}")
+    return best_reg
+
+
+def find_optimal_reg_marginals(
+    N=400, C=15, p=0.46, reg=1.5, max_iter=2000, low=1, high=500
+):
+    # 333 ale w sumie to może nie być dobra metoda, może lepiej porównać różnicę między tym a 0.46 np. zamiast maksymalizować
+    best_reg_m, best_cost = None, float("inf")
+
+    for _ in range(10):
+        mid1 = low + (high - low) / 3
+        mid2 = high - (high - low) / 3
+
+        _, log1 = test_sparse_mirror_descent(
+            N, C, p, reg, mid1, mid1, max_iter=max_iter, step_size=0.002
+        )
+        _, log2 = test_sparse_mirror_descent(
+            N, C, p, reg, mid2, mid2, max_iter=max_iter, step_size=0.002
+        )
+
+        cost1 = log1["final_distance"]
+        cost2 = log2["final_distance"]
+
+        if cost1 < cost2:
+            high = mid2
+            if cost1 < best_cost:
+                best_reg_m, best_cost = mid1, cost1
+        else:
+            low = mid1
+            if cost2 < best_cost:
+                best_reg_m, best_cost = mid2, cost2
+
+    print(f"Optimal reg_a/reg_b: {best_reg_m}, Cost: {best_cost}")
+    return best_reg_m
 
 
 # ------------------------------------------------------------------------------
@@ -715,12 +933,33 @@ def run_timing_experiment():
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    reg_a, reg_b = 22, 25
-    reg = 0.01
+    reg_a, reg_b = 333, 333
+    reg = 1.5
     N = 400
     C = 15
-    max_iter = 5000
+    max_iter = 2000
+    step_size = 0.002
 
     # Uncomment the desired function to run
-    # test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
-    run_timing_experiment()
+    test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
+    test_sparse(N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
+
+    test_sparse_mirror_descent(
+        N,
+        C,
+        0.46,
+        reg,
+        reg_a,
+        reg_b,
+        max_iter=max_iter,
+        step_size=step_size,
+        debug=True,
+    )
+    test_sparse_mirror_descent(
+        N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
+    )
+    # run_comparison_experiment()
+
+    # Uncomment to find optimal parameters
+    # find_optimal_reg()
+    # find_optimal_reg_marginals(reg=1.5)
