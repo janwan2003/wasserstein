@@ -3,6 +3,7 @@ name = "wasserstein"
 version = "0.1.0"
 description = "Wasserstein project"
 readme = "README.md"
+package-mode = false 
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -16,6 +17,8 @@ matplotlib = ">=3.10.1,<4.0.0"
 pandas = ">=2.2.3,<3.0.0"
 pot = ">=0.9.5,<0.10.0"
 torch = ">=2.6.0,<3.0.0"
+optimal-transport = "^0.0.1"
+ruff = "^0.11.11"
 
 [build-system]
 requires = ["poetry-core"]
