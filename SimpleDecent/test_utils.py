@@ -26,6 +26,71 @@ def multidiagonal_cost(v1, v2, C):
     """
     Construct a multidiagonal sparse matrix where M[i,j] = abs(v1[i] - v2[j]) if abs(i-j) < C.
 
+janek@janeks:~/wasserstein$ poetry env use python3
+poetry install
+Could not find platform independent libraries <prefix>
+Could not find platform dependent libraries <exec_prefix>
+Python path configuration:
+  PYTHONHOME = (not set)
+  PYTHONPATH = (not set)
+  program name = '/home/janek/.local/share/pypoetry/venv/bin/python'
+  isolated = 0
+  environment = 1
+  user site = 1
+  safe_path = 0
+  import site = 1
+  is in build tree = 0
+  stdlib dir = '/home/janek/miniconda3/lib/python3.11'
+  sys._base_executable = '/home/janek/miniconda3/bin/python'
+  sys.base_prefix = '/home/janek/miniconda3'
+  sys.base_exec_prefix = '/home/janek/miniconda3'
+  sys.platlibdir = 'lib'
+  sys.executable = '/home/janek/.local/share/pypoetry/venv/bin/python'
+  sys.prefix = '/home/janek/miniconda3'
+  sys.exec_prefix = '/home/janek/miniconda3'
+  sys.path = [
+    '/home/janek/miniconda3/lib/python311.zip',
+    '/home/janek/miniconda3/lib/python3.11',
+    '/home/janek/miniconda3/lib/python3.11/lib-dynload',
+  ]
+Fatal Python error: init_fs_encoding: failed to get the Python codec of the filesystem encoding
+Python runtime state: core initialized
+ModuleNotFoundError: No module named 'encodings'
+
+Current thread 0x000076cad1dac740 (most recent call first):
+  <no Python frame>
+Could not find platform independent libraries <prefix>
+Could not find platform dependent libraries <exec_prefix>
+Python path configuration:
+  PYTHONHOME = (not set)
+  PYTHONPATH = (not set)
+  program name = '/home/janek/.local/share/pypoetry/venv/bin/python'
+  isolated = 0
+  environment = 1
+  user site = 1
+  safe_path = 0
+  import site = 1
+  is in build tree = 0
+  stdlib dir = '/home/janek/miniconda3/lib/python3.11'
+  sys._base_executable = '/home/janek/miniconda3/bin/python'
+  sys.base_prefix = '/home/janek/miniconda3'
+  sys.base_exec_prefix = '/home/janek/miniconda3'
+  sys.platlibdir = 'lib'
+  sys.executable = '/home/janek/.local/share/pypoetry/venv/bin/python'
+  sys.prefix = '/home/janek/miniconda3'
+  sys.exec_prefix = '/home/janek/miniconda3'
+  sys.path = [
+    '/home/janek/miniconda3/lib/python311.zip',
+    '/home/janek/miniconda3/lib/python3.11',
+    '/home/janek/miniconda3/lib/python3.11/lib-dynload',
+  ]
+Fatal Python error: init_fs_encoding: failed to get the Python codec of the filesystem encoding
+Python runtime state: core initialized
+ModuleNotFoundError: No module named 'encodings'
+
+Current thread 0x00007de8c7855740 (most recent call first):
+  <no Python frame>
+janek@janeks:~/wasserstein$ 
     Parameters:
         v1, v2 (array-like): Input vectors (must be same length)
         C (int): Bandwidth parameter controlling how many diagonals are non-zero
@@ -497,6 +562,8 @@ class UtilsSparse:
             grad_flat_clipped = np.clip(grad_flat, -100, 100)
             G_flat_new = G_flat * np.exp(-step_size * grad_flat_clipped)
             G_flat_new = np.maximum(G_flat_new, 1e-15)
+            # Normalize
+            G_flat_new /= np.sum(G_flat_new)
 
             val_new, grad_flat_new = self.func_sparse(G_flat_new)
 
@@ -933,33 +1000,33 @@ def find_optimal_reg_marginals(
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    reg_a, reg_b = 333, 333
+    reg_a, reg_b = 50, 50
     reg = 1.5
     N = 400
     C = 15
-    max_iter = 2000
-    step_size = 0.002
+    max_iter = 1000
+    step_size = 0.001
 
     # Uncomment the desired function to run
-    test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
-    test_sparse(N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
+    # test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
+    # test_sparse(N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
 
-    test_sparse_mirror_descent(
-        N,
-        C,
-        0.46,
-        reg,
-        reg_a,
-        reg_b,
-        max_iter=max_iter,
-        step_size=step_size,
-        debug=True,
-    )
-    test_sparse_mirror_descent(
-        N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
-    )
+    # test_sparse_mirror_descent(
+    #     N,
+    #     C,
+    #     0.46,
+    #     reg,
+    #     reg_a,
+    #     reg_b,
+    #     max_iter=max_iter,
+    #     step_size=step_size,
+    #     debug=True,
+    # )
+    # test_sparse_mirror_descent(
+    #     N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
+    # )
     # run_comparison_experiment()
 
     # Uncomment to find optimal parameters
-    # find_optimal_reg()
+    find_optimal_reg()
     # find_optimal_reg_marginals(reg=1.5)
