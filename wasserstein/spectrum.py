@@ -1,5 +1,5 @@
 import math
-import IsoSpecPy
+# import IsoSpecPy
 import numpy as np
 from scipy.stats import uniform, gamma
 import random
