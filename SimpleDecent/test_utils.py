@@ -290,7 +290,7 @@ class UtilsSparse:
     using sparse multidiagonal matrices.
     """
 
-    def __init__(self, a, b, c, G0_sparse, M_sparse, reg, reg_m1, reg_m2, damp):
+    def __init__(self, a, b, c, G0_sparse, M_sparse, reg, reg_m1, reg_m2):
         """
         Initialize the sparse optimization utilities.
 
@@ -303,7 +303,6 @@ class UtilsSparse:
             reg (float): KL regularization strength
             reg_m1 (float): Regularization for source marginal
             reg_m2 (float): Regularization for target marginal
-            damp (float): Damping parameter
         """
         self.a = a
         self.b = b
@@ -320,12 +319,6 @@ class UtilsSparse:
         self.reg = reg
         self.reg_m1 = reg_m1
         self.reg_m2 = reg_m2
-        self.damp = damp
-
-        self.data /= damp
-        self.reg /= damp
-        self.reg_m1 /= damp
-        self.reg_m2 /= damp
 
     def sparse_dot(self, G_data, G_offsets):
         """
@@ -455,10 +448,10 @@ class UtilsSparse:
             options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": numItermax},
         )
 
-        G = reconstruct_multidiagonal(res.x, self.G0_sparse.offsets, self.m) * self.damp
+        G = reconstruct_multidiagonal(res.x, self.G0_sparse.offsets, self.m)
 
         log = {
-            "total_cost": res.fun * self.damp,
+            "total_cost": res.fun,
             "cost": self.sparse_dot(G, self.offsets),
             "res": res,
         }
@@ -485,7 +478,7 @@ class UtilsSparse:
         val_prev, grad_flat = self.func_sparse(G_flat)
 
         log = {
-            "loss": [val_prev * self.damp],
+            "loss": [val_prev],
             "step_sizes": [step_size],
         }
 
@@ -498,7 +491,7 @@ class UtilsSparse:
             val_new, grad_flat_new = self.func_sparse(G_flat_new)
 
             rel_change = abs(val_new - val_prev) / max(abs(val_prev), 1e-10)
-            log["loss"].append(val_new * self.damp)
+            log["loss"].append(val_new)
             log["step_sizes"].append(step_size)
 
             if rel_change < stopThr:
@@ -515,8 +508,8 @@ class UtilsSparse:
             log["convergence"] = False
             log["iterations"] = numItermax
 
-        G = reconstruct_multidiagonal(G_flat, G_offsets, self.m) * self.damp
-        log["total_cost"] = val_prev * self.damp
+        G = reconstruct_multidiagonal(G_flat, G_offsets, self.m)
+        log["total_cost"] = val_prev
         log["cost"] = self.sparse_dot(G, G_offsets)
 
         return G, log
@@ -615,7 +608,7 @@ class UtilsDense:
 # ------------------------------------------------------------------------------
 
 
-def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp=1, max_iter=5000, debug=False):
+def test_sparse(N, C, p, reg, reg_m1, reg_m2, max_iter=5000, debug=False):
     """
     Test the sparse optimization algorithm on NMR spectra.
 
@@ -626,7 +619,6 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp=1, max_iter=5000, debug=False
         reg (float): KL regularization strength
         reg_m1 (float): Source marginal regularization
         reg_m2 (float): Target marginal regularization
-        damp (float): Damping parameter
         max_iter (int): Maximum number of iterations
         debug (bool): Whether to print debug information
 
@@ -660,10 +652,9 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp=1, max_iter=5000, debug=False
 
     c = reg_distribiution(2 * N, C)
 
-    sparse = UtilsSparse(a, b, c, G0, M, reg, reg_m1, reg_m2, damp)
+    sparse = UtilsSparse(a, b, c, G0, M, reg, reg_m1, reg_m2)
     # print(sparse.sparse_row_sum(M.data, M.offsets))
     G, log_s = sparse.lbfgsb_unbalanced(numItermax=max_iter)
-    G /= damp
     transport_cost = sparse.sparse_dot(G, sparse.offsets)
     # marginal_penalty = sparse.marg_tv_sparse_huber(G, sparse.offsets)
     regularization_term = sparse.reg_kl_sparse(G, sparse.offsets)
@@ -673,36 +664,36 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, damp=1, max_iter=5000, debug=False
         emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
         print(f"EMD: {emd}")
         print(
-            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}, damp: {damp}"
+            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}"
         )
-        print("Transport cost: ", transport_cost * damp)
-        print("Regularization term:", regularization_term * damp)
-        print("Marginal penalty: ", marginal_penalty * damp)
+        print("Transport cost: ", transport_cost)
+        print("Regularization term:", regularization_term)
+        print("Marginal penalty: ", marginal_penalty)
         print(
-            "Marginal penalty normalized: ", marginal_penalty * damp / (reg_m1 + reg_m2)
+            "Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2)
         )
         print(
             "Final distance: ",
-            (transport_cost + marginal_penalty / (reg_m1 + reg_m2) * damp),
+            (transport_cost + marginal_penalty / (reg_m1 + reg_m2)),
         )
         val, _ = sparse.func_sparse(flatten_multidiagonal(G, sparse.offsets))
-        print("Value: ", val * damp)
+        print("Value: ", val)
         print("G sum: ", np.sum(G))
         print(log_s)
 
     # validation
     if not reg > 0:
         dense = UtilsDense(a, b, c, G0.toarray(), M.toarray(), reg, reg_m1, reg_m2)
-        G_dense = dia_matrix((G * damp, sparse.offsets), shape=(2 * N, 2 * N)).toarray()
+        G_dense = dia_matrix((G, sparse.offsets), shape=(2 * N, 2 * N)).toarray()
 
         G_d, log_d = dense.lbfgsb_unbalanced(numItermax=max_iter)
 
         transport_cost2 = np.sum(G_dense * dense.M)
         marginal_penalty2 = dense.marg_tv(G_dense)
-        print("Dense trasport cost: ", transport_cost2 * damp)
-        print("Dense marginal penalty: ", marginal_penalty2 * damp)
+        print("Dense trasport cost: ", transport_cost2)
+        print("Dense marginal penalty: ", marginal_penalty2)
         val2, _ = dense.func(G_dense)
-        print("Value: ", val2 * damp)
+        print("Value: ", val2)
         print("Dense sum G: ", np.sum(G_d))
 
         print(log_d)
@@ -715,7 +706,6 @@ def test_sparse_mirror_descent(
     reg,
     reg_m1,
     reg_m2,
-    damp=1,
     max_iter=5000,
     step_size=0.1,
     debug=False,
@@ -731,7 +721,6 @@ def test_sparse_mirror_descent(
         reg (float): KL regularization strength
         reg_m1 (float): Source marginal regularization
         reg_m2 (float): Target marginal regularization
-        damp (float): Damping parameter
         max_iter (int): Maximum number of iterations
         step_size (float): Initial step size for mirror descent
         adaptive_step (bool): Whether to use adaptive step size
@@ -762,7 +751,7 @@ def test_sparse_mirror_descent(
     # print("Warmstart shape: ", warmstart.shape)
     c = reg_distribiution(2 * N, C)
 
-    sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2, damp)
+    sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2)
 
     # Use mirror descent instead of L-BFGS-B
     start_time = time.time()
@@ -774,27 +763,27 @@ def test_sparse_mirror_descent(
     transport_cost = sparse.sparse_dot(G, sparse.offsets)
     regularization_term = sparse.reg_kl_sparse(G, sparse.offsets)
     marginal_penalty = sparse.marg_tv_sparse(G, sparse.offsets)
-    final_distance = transport_cost + marginal_penalty / (reg_m1 + reg_m2) * damp
+    final_distance = transport_cost + marginal_penalty / (reg_m1 + reg_m2)
     log_s["final_distance"] = final_distance
     if debug:
         emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
         print(f"EMD: {emd}")
         print(
-            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}, damp: {damp}"
+            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}"
         )
         print("Optimization method: Mirror Descent")
         print(f"Iterations: {log_s.get('iterations', max_iter)}")
         print(f"Converged: {log_s.get('convergence', False)}")
         print(f"Time taken: {end_time - start_time:.4f} seconds")
-        print("Transport cost: ", transport_cost * damp)
-        print("Regularization term:", regularization_term * damp)
-        print("Marginal penalty: ", marginal_penalty * damp)
+        print("Transport cost: ", transport_cost)
+        print("Regularization term:", regularization_term)
+        print("Marginal penalty: ", marginal_penalty)
         print(
-            "Marginal penalty normalized: ", marginal_penalty * damp / (reg_m1 + reg_m2)
+            "Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2)
         )
         print(
             "Final distance: ",
-            (transport_cost + marginal_penalty / (reg_m1 + reg_m2) * damp),
+            (transport_cost + marginal_penalty / (reg_m1 + reg_m2)),
         )
         print("G sum: ", np.sum(G))
 
@@ -814,7 +803,6 @@ def test_ws_distance(
     reg,
     reg_m1,
     reg_m2,
-    damp=1,
     max_iter=5000,
     step_size=0.1,
     debug=False,
@@ -829,7 +817,6 @@ def test_ws_distance(
         reg (float): KL regularization strength
         reg_m1 (float): Source marginal regularization
         reg_m2 (float): Target marginal regularization
-        damp (float): Damping parameter
         max_iter (int): Maximum number of iterations
         step_size (float): Initial step size for mirror descent
         adaptive_step (bool): Whether to use adaptive step size
