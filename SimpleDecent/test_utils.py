@@ -495,9 +495,6 @@ class UtilsSparse:
         # Compute gradient
         grad = self.data + self.grad_marg_tv_sparse(G_data, self.offsets)
 
-        # Combine gradients
-        grad_flat = np.zeros_like(G_flat)
-
         if self.reg > 0:
             grad += self.grad_kl_sparse(G_data, self.offsets)
 
@@ -560,10 +557,9 @@ class UtilsSparse:
 
         for i in range(numItermax):
             grad_flat_clipped = np.clip(grad_flat, -100, 100)
-            G_flat_new = G_flat * np.exp(-step_size * grad_flat_clipped)
-            G_flat_new = np.maximum(G_flat_new, 1e-15)
-            # Normalize
-            G_flat_new /= np.sum(G_flat_new)
+            G_w = G_flat * np.exp(-step_size * grad_flat_clipped)
+            G_w = np.maximum(G_w, 1e-15)
+            G_flat_new = G_w / np.sum(G_w)
 
             val_new, grad_flat_new = self.func_sparse(G_flat_new)
 
@@ -829,7 +825,7 @@ def test_sparse_mirror_descent(
     M = multidiagonal_cost(v1, v2, C)
     if warmstart is None:
         warmstart = warmstart_sparse(a, b, C)
-    print("Warmstart shape: ", warmstart.shape)
+    # print("Warmstart shape: ", warmstart.shape)
     c = reg_distribiution(2 * N, C)
 
     sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2, damp)
@@ -1005,26 +1001,27 @@ if __name__ == "__main__":
     N = 400
     C = 15
     max_iter = 1000
-    step_size = 0.001
+    step_size = 0.0005
 
     # Uncomment the desired function to run
     # test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
     # test_sparse(N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
 
-    # test_sparse_mirror_descent(
-    #     N,
-    #     C,
-    #     0.46,
-    #     reg,
-    #     reg_a,
-    #     reg_b,
-    #     max_iter=max_iter,
-    #     step_size=step_size,
-    #     debug=True,
-    # )
-    # test_sparse_mirror_descent(
-    #     N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
-    # )
+    # for p in [0.3, 0.35, 0.4, 0.45, 0.5]:
+    #     test_sparse_mirror_descent(
+    #         N,
+    #         C,
+    #         p,
+    #         reg,
+    #         reg_a,
+    #         reg_b,
+    #         max_iter=max_iter,
+    #         step_size=step_size,
+    #         debug=True,
+    #     )
+    test_sparse_mirror_descent(
+        N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
+    )
     # run_comparison_experiment()
 
     # Uncomment to find optimal parameters
