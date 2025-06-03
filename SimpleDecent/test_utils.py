@@ -383,6 +383,16 @@ class UtilsSparse:
             np.abs(col_sums - self.b)
         )
 
+    def marg_tv_sparse_rm1(self, G_data, G_offsets):
+        """TV marginal penalty for sparse matrix"""
+        row_sums = self.sparse_row_sum(G_data, G_offsets)
+        return self.reg_m1 * np.sum(np.abs(row_sums - self.a))
+    
+    def marg_tv_sparse_rm2(self, G_data, G_offsets):
+        """TV marginal penalty for sparse matrix"""
+        col_sums = self.sparse_col_sum(G_data, G_offsets)
+        return self.reg_m2 * np.sum(np.abs(col_sums - self.b))
+
     def grad_marg_tv_sparse(self, G_data, G_offsets):
         """Gradient of TV marginal penalty"""
         row_sums = self.sparse_row_sum(G_data, G_offsets)
