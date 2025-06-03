@@ -479,7 +479,7 @@ class UtilsSparse:
 
         log = {
             "loss": [val_prev],
-            "step_sizes": [step_size],
+            "step_sizes": [step_size], # ?
         }
 
         for i in range(numItermax):
@@ -492,7 +492,7 @@ class UtilsSparse:
 
             rel_change = abs(val_new - val_prev) / max(abs(val_prev), 1e-10)
             log["loss"].append(val_new)
-            log["step_sizes"].append(step_size)
+            log["step_sizes"].append(step_size) # ?
 
             if rel_change < stopThr:
                 log["convergence"] = True
