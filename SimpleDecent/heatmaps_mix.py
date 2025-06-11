@@ -4,7 +4,6 @@ from tqdm import tqdm
 import multiprocessing
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 
 def construct_data(N, C):
     spectra, mix = load_data()
@@ -31,8 +30,8 @@ def construct_data(N, C):
     return a, b, c, M, G0
 
 # Parameters
-regm1_values = np.linspace(1, 400, num=20)
-regm2_values = np.linspace(1, 400, num=20)
+regm1_values = np.linspace(200, 400, num=20)
+regm2_values = np.linspace(100, 300, num=20)
 reg = 1.5
 N = 1000
 C = 20
@@ -52,7 +51,7 @@ metrics_s1 = {
     "Marginal Penalty Normalized": new_grid()
 }
 
-Path("heatmaps/heatmaps_mix").mkdir(exist_ok=True)
+os.makedirs("plots/heatmaps_md/heatmaps_mix", exist_ok=True)
 
 args_list = [(i, j, regm1, regm2) for i, regm1 in enumerate(regm1_values)
                                     for j, regm2 in enumerate(regm2_values)]
@@ -116,8 +115,7 @@ def plot_heatmap_grid(metric_name, data, xvals, yvals):
     ax.set_aspect('equal')
     plt.tight_layout()
 
-    os.makedirs("heatmaps/heatmaps_mix", exist_ok=True)
-    filepath = f"heatmaps/heatmaps_mix/{metric_name.lower().replace(' ', '_')}.png"
+    filepath = f"plots/heatmaps_md/heatmaps_mix/{metric_name.lower().replace(' ', '_')}v2.png"
     plt.savefig(filepath)
     plt.close()
 

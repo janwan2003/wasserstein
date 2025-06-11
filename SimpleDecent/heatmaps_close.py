@@ -4,7 +4,6 @@ from tqdm import tqdm
 import multiprocessing
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 
 def construct_data(N, C):
     spectra, _ = load_data()
@@ -59,7 +58,7 @@ metrics_s1 = {
 }
 metrics_s2 = {k: new_grid() for k in metrics_s1}
 
-Path("heatmaps/heatmaps_close").mkdir(exist_ok=True)
+os.makedirs("plots/heatmaps_md/heatmaps_close", exist_ok=True)
 
 args_list = [(i, j, regm1, regm2) for i, regm1 in enumerate(regm1_values)
                                     for j, regm2 in enumerate(regm2_values)]
@@ -119,7 +118,8 @@ def plot_heatmap_grid(metric_name, data_s1, data_s2, xvals, yvals):
 
     plt.suptitle(f"Heatmaps of {metric_name} vs regm1 and regm2")
     plt.tight_layout()
-    filepath = f"heatmaps/heatmaps_close/{metric_name.lower().replace(' ', '_')}.png"
+
+    filepath = f"plots/heatmaps_md/heatmaps_close/{metric_name.lower().replace(' ', '_')}.png"
     plt.savefig(filepath)
     plt.close()
 
