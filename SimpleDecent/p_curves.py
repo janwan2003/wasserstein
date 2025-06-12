@@ -80,10 +80,12 @@ def process_wrapper(arg_tuple):
     a, b, c, M = construct_data(N, C, p)
     sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
 
-    # G, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
-    G, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    if METHOD == "lbfgsb":
+        G, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    else:
+        G, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
 
-    print(f"Sum of G for p={p}: {np.sum(G)}")
+    # print(f"Sum of G for p={p}: {np.sum(G)}")
 
     tc = sparse.sparse_dot(G, sparse.offsets)
     reg_val = sparse.reg_kl_sparse(G, sparse.offsets)

@@ -5,6 +5,9 @@ import multiprocessing
 import matplotlib.pyplot as plt
 import numpy as np
 
+# METHOD = "mirror_descent"
+METHOD = "lbfgsb"
+
 def construct_data(N, C):
     spectra, mix = load_data()
 
@@ -23,11 +26,11 @@ def construct_data(N, C):
     v2 = np.array([v for v, _ in mix_aprox.confs])
 
     M = multidiagonal_cost(v1, v2, C)
-    G0 = warmstart_sparse(a, b, C)
+    # G0 = warmstart_sparse(a, b, C)
 
     c = reg_distribiution(2 * N, C)
 
-    return a, b, c, M, G0
+    return a, b, c, M
 
 # Parameters
 regm1_values = np.linspace(200, 400, num=20)
@@ -37,8 +40,25 @@ N = 1000
 C = 20
 max_iter = 1000
 
-# Data
-a, b, c, M, G0 = construct_data(N, C)
+# Warmstart
+a, b, c, M = construct_data(N, C)
+_G0 = warmstart_sparse(a, b, C)
+_regm1 = (regm1_values[0] + regm1_values[-1]) / 2
+_regm2 = (regm2_values[0] + regm2_values[-1]) / 2
+sparse = UtilsSparse(a, b, c, _G0, M, reg, _regm1, _regm2)
+
+print("Constructing warmstart...")
+if METHOD == "lbfgsb":
+    save_path = "heatmaps_lbfgsb"
+    print("Using LBFGSB method.")
+    _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+else:
+    save_path = "heatmaps_md"
+    print("Using Mirror Descent method.")
+    _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
+G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
+print("Warmstart constructed.")
+
 shape = (len(regm1_values), len(regm2_values))
 
 # Initialize metric containers
@@ -51,7 +71,7 @@ metrics_s1 = {
     "Marginal Penalty Normalized": new_grid()
 }
 
-os.makedirs("plots/heatmaps_md/heatmaps_mix", exist_ok=True)
+os.makedirs(f"plots/{save_path}/heatmaps_mix", exist_ok=True)
 
 args_list = [(i, j, regm1, regm2) for i, regm1 in enumerate(regm1_values)
                                     for j, regm2 in enumerate(regm2_values)]
@@ -62,7 +82,10 @@ def process_wrapper(arg_tuple):
     i, j, regm1, regm2 = arg_tuple
     sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
 
-    G, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
+    if METHOD == "lbfgsb":
+        G, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    else:
+        G, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
 
     tc = sparse.sparse_dot(G, sparse.offsets)
     reg_val = sparse.reg_kl_sparse(G, sparse.offsets)
@@ -78,10 +101,14 @@ def process_wrapper(arg_tuple):
         "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2
     })
 
-with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-    futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-    for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-        results.append(future.result())
+if METHOD == "lbfgsb":
+    for i, p in tqdm(args_list, desc="Processing"):
+        results.append(process_wrapper((i, p)))
+else:
+    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+        futures = [executor.submit(process_wrapper, arg) for arg in args_list]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+            results.append(future.result())
 
 for i, j, metrics in results:
     for key in metrics_s1.keys():
@@ -115,7 +142,7 @@ def plot_heatmap_grid(metric_name, data, xvals, yvals):
     ax.set_aspect('equal')
     plt.tight_layout()
 
-    filepath = f"plots/heatmaps_md/heatmaps_mix/{metric_name.lower().replace(' ', '_')}v2.png"
+    filepath = f"plots/{save_path}/heatmaps_mix/{metric_name.lower().replace(' ', '_')}.png"
     plt.savefig(filepath)
     plt.close()
 

@@ -2,8 +2,8 @@ from test_utils import *
 import matplotlib.pyplot as plt
 import numpy as np
 
-METHOD = "mirror_descent"
-# METHOD = "lbfgsb"
+# METHOD = "mirror_descent"
+METHOD = "lbfgsb"
 
 def construct_data(N, C):
     spectra, mix = load_data()
@@ -62,37 +62,51 @@ print("Sum of G:", np.sum(G))
 
 os.makedirs(f"plots/{save_path}", exist_ok=True)
 
-# Plot
-fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+# Combined plot with 6 subplots: 3 rows × 2 columns
+fig, axs = plt.subplots(3, 2, figsize=(12, 12))
 
-# Top-left: v1 vs a
+# Top row
 axs[0, 0].scatter(v1, a, color='blue', s=10)
 axs[0, 0].set_title('Original source (a)')
 axs[0, 0].set_xlabel('v1')
 axs[0, 0].set_ylabel('Mass')
 
-# Top-right: v1 vs G*1
-axs[0, 1].scatter(v1, G1, color='orange', s=10)
-axs[0, 1].set_title('Transported source (G * 1)')
-axs[0, 1].set_xlabel('v1')
+axs[0, 1].scatter(v2, b, color='green', s=10)
+axs[0, 1].set_title('Original target (b)')
+axs[0, 1].set_xlabel('v2')
 axs[0, 1].set_ylabel('Mass')
 
-# Bottom-left: v2 vs b
-axs[1, 0].scatter(v2, b, color='green', s=10)
-axs[1, 0].set_title('Original target (b)')
-axs[1, 0].set_xlabel('v2')
+# Middle row
+axs[1, 0].scatter(v1, G1, color='orange', s=10)
+axs[1, 0].set_title('Transported source (G * 1)')
+axs[1, 0].set_xlabel('v1')
 axs[1, 0].set_ylabel('Mass')
 
-# Bottom-right: v2 vs 1^T * G
 axs[1, 1].scatter(v2, G2, color='red', s=10)
 axs[1, 1].set_title('Transported target (1ᵀ * G)')
 axs[1, 1].set_xlabel('v2')
 axs[1, 1].set_ylabel('Mass')
 
+# Bottom row: Deltas
+delta_source = a - G1
+delta_target = b - G2
+
+axs[2, 0].scatter(v1, delta_source, color='purple', s=10)
+axs[2, 0].axhline(0, color='black', linestyle='--', linewidth=1)
+axs[2, 0].set_title('Delta source (a - G * 1)')
+axs[2, 0].set_xlabel('v1')
+axs[2, 0].set_ylabel('Delta Mass')
+
+axs[2, 1].scatter(v2, delta_target, color='brown', s=10)
+axs[2, 1].axhline(0, color='black', linestyle='--', linewidth=1)
+axs[2, 1].set_title('Delta target (b - 1ᵀ * G)')
+axs[2, 1].set_xlabel('v2')
+axs[2, 1].set_ylabel('Delta Mass')
+
 plt.tight_layout()
 
-output_path = f"plots/{save_path}/marginals_comparison.png"
+output_path = f"plots/{save_path}/marginals_comparison_with_deltas.png"
 plt.savefig(output_path, dpi=300)
 plt.close()
 
-print(f"Plot saved to {output_path}")
+print(f"Plot with deltas saved to {output_path}")

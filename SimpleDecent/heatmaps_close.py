@@ -5,6 +5,9 @@ import multiprocessing
 import matplotlib.pyplot as plt
 import numpy as np
 
+# METHOD = "mirror_descent"
+METHOD = "lbfgsb"
+
 def construct_data(N, C):
     spectra, _ = load_data()
 
@@ -26,14 +29,14 @@ def construct_data(N, C):
     s2v = np.array([v for v, _ in s2.confs])
 
     M1 = multidiagonal_cost(s1v, s1v, C)
-    G01 = warmstart_sparse(s1a, s12b, C)
+    # G01 = warmstart_sparse(s1a, s12b, C)
 
     M2 = multidiagonal_cost(s2v, s2v, C)
-    G02 = warmstart_sparse(s2a, s22b, C)
+    # G02 = warmstart_sparse(s2a, s22b, C)
 
     c = reg_distribiution(N, C)
 
-    return s1a, s12b, s2a, s22b, c, M1, G01, M2, G02
+    return s1a, s12b, s2a, s22b, c, M1, M2
 
 # Parameters
 regm1_values = np.linspace(1, 300, num=20)
@@ -44,7 +47,30 @@ C = 20
 max_iter = 1000
 
 # Data
-s1a, s12b, s2a, s22b, c, M1, G01, M2, G02 = construct_data(N, C)
+s1a, s12b, s2a, s22b, c, M1, M2 = construct_data(N, C)
+_G01 = warmstart_sparse(s1a, s12b, C)
+_G02 = warmstart_sparse(s2a, s22b, C)
+_regm1 = (regm1_values[0] + regm1_values[-1]) / 2
+_regm2 = (regm2_values[0] + regm2_values[-1]) / 2
+sparse1 = UtilsSparse(s1a, s12b, c, _G01, M1, reg, _regm1, _regm2)
+sparse2 = UtilsSparse(s2a, s22b, c, _G02, M2, reg, _regm1, _regm2)
+
+print("Constructing warmstart...")
+if METHOD == "lbfgsb":
+    save_path = "heatmaps_lbfgsb"
+    print("Using LBFGSB method.")
+    _G01, _ = sparse1.lbfgsb_unbalanced(numItermax=max_iter)
+    _G02, _ = sparse2.lbfgsb_unbalanced(numItermax=max_iter)
+else:
+    save_path = "heatmaps_md"
+    print("Using Mirror Descent method.")
+    _G01, _ = sparse1.mirror_descent_unbalanced(numItermax=max_iter)
+    _G02, _ = sparse2.mirror_descent_unbalanced(numItermax=max_iter)
+
+G01 = dia_matrix((_G01, sparse1.offsets), shape=(sparse1.n, sparse1.m), dtype=np.float64)
+G02 = dia_matrix((_G02, sparse2.offsets), shape=(sparse2.n, sparse2.m), dtype=np.float64)
+print("Warmstart constructed.")
+
 shape = (len(regm1_values), len(regm2_values))
 
 # Initialize metric containers
@@ -58,7 +84,7 @@ metrics_s1 = {
 }
 metrics_s2 = {k: new_grid() for k in metrics_s1}
 
-os.makedirs("plots/heatmaps_md/heatmaps_close", exist_ok=True)
+os.makedirs(f"plots/{save_path}/heatmaps_close", exist_ok=True)
 
 args_list = [(i, j, regm1, regm2) for i, regm1 in enumerate(regm1_values)
                                     for j, regm2 in enumerate(regm2_values)]
@@ -70,8 +96,12 @@ def process_wrapper(arg_tuple):
     sparse1 = UtilsSparse(s1a, s12b, c, G01, M1, reg, regm1, regm2)
     sparse2 = UtilsSparse(s2a, s22b, c, G02, M2, reg, regm1, regm2)
 
-    G1, _ = sparse1.mirror_descent_unbalanced(numItermax=max_iter)
-    G2, _ = sparse2.mirror_descent_unbalanced(numItermax=max_iter)
+    if METHOD == "lbfgsb":
+        G1, _ = sparse1.lbfgsb_unbalanced(numItermax=max_iter)
+        G2, _ = sparse2.lbfgsb_unbalanced(numItermax=max_iter)
+    else:
+        G1, _ = sparse1.mirror_descent_unbalanced(numItermax=max_iter)
+        G2, _ = sparse2.mirror_descent_unbalanced(numItermax=max_iter)
 
     tc1 = sparse1.sparse_dot(G1, sparse1.offsets)
     reg1 = sparse1.reg_kl_sparse(G1, sparse1.offsets)
@@ -89,10 +119,14 @@ def process_wrapper(arg_tuple):
         "Marginal Penalty Normalized": (marg1 / (regm1 + regm2), marg2 / (reg1 + regm2))
     })
 
-with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-    futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-    for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-        results.append(future.result())
+if METHOD == "lbfgsb":
+    for i, p in tqdm(args_list, desc="Processing"):
+        results.append(process_wrapper((i, p)))
+else:
+    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+        futures = [executor.submit(process_wrapper, arg) for arg in args_list]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+            results.append(future.result())
 
 for i, j, metrics in results:
     for key in metrics_s1.keys():
@@ -119,7 +153,7 @@ def plot_heatmap_grid(metric_name, data_s1, data_s2, xvals, yvals):
     plt.suptitle(f"Heatmaps of {metric_name} vs regm1 and regm2")
     plt.tight_layout()
 
-    filepath = f"plots/heatmaps_md/heatmaps_close/{metric_name.lower().replace(' ', '_')}.png"
+    filepath = f"plots/{save_path}/heatmaps_close/{metric_name.lower().replace(' ', '_')}.png"
     plt.savefig(filepath)
     plt.close()
 
