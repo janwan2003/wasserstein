@@ -30,8 +30,8 @@ def construct_data(N, C):
     return v1, v2, a, b, c, M, G0
 
 # Parameters
-regm1 = 115
-regm2 = 230
+regm1 = 230
+regm2 = 115
 reg = 1.5
 N = 1000
 C = 20

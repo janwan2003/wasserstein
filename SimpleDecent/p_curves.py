@@ -5,8 +5,8 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
-# METHOD = "mirror_descent"
-METHOD = "lbfgsb"
+METHOD = "mirror_descent"
+# METHOD = "lbfgsb"
 
 def construct_data(N, C, p):
     spectra, mix = load_data()
@@ -32,11 +32,11 @@ def construct_data(N, C, p):
     return a, b, c, M
 
 # Parameters
-regm1 = 115
-regm2 = 230
+regm1 = 230
+regm2 = 115
 reg = 1.5
-N = 200
-C = 15
+N = 1000
+C = 20
 max_iter = 1000
 p_values = np.linspace(0.3, 0.6, 32)
 
