@@ -151,7 +151,7 @@ def warmstart_sparse(p1, p2, C):
     sum = np.sum(diagonals)
     diagonals /= sum
 
-    return dia_matrix((np.array(diagonals), offsets), shape=(n, n))
+    return dia_matrix((np.array(diagonals), offsets), shape=(n, n), dtype=np.float64)
 
 
 def flatten_multidiagonal(matrix_data, offsets):
@@ -455,7 +455,11 @@ class UtilsSparse:
             jac=True,
             bounds=Bounds(0, np.inf),
             tol=stopThr,
-            options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": numItermax},
+            options={
+                # "ftol": 1e-12, 
+                # "gtol": 1e-8, 
+                "maxiter": numItermax
+            },
         )
 
         G = reconstruct_multidiagonal(res.x, self.G0_sparse.offsets, self.m)
@@ -465,6 +469,7 @@ class UtilsSparse:
             "cost": self.sparse_dot(G, self.offsets),
             "res": res,
         }
+        # print(res)
         return G, log
 
     def mirror_descent_unbalanced(self, numItermax=1000, step_size=0.1, stopThr=1e-9):

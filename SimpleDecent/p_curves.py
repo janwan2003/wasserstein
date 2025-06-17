@@ -5,8 +5,8 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
-METHOD = "mirror_descent"
-# METHOD = "lbfgsb"
+# METHOD = "mirror_descent"
+METHOD = "lbfgsb"
 
 def construct_data(N, C, p):
     spectra, mix = load_data()
@@ -35,26 +35,31 @@ def construct_data(N, C, p):
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 1000
+N = 400
 C = 20
 max_iter = 1000
-p_values = np.linspace(0.3, 0.6, 32)
+p_values = np.linspace(0.3, 0.7, 32)
 
 # Construct warmstart
+print("Constructing warmstart...")
+
 a, b, c, M = construct_data(N, C, 0.5)
 _G0 = warmstart_sparse(a, b, C)
 sparse = UtilsSparse(a, b, c, _G0, M, reg, regm1, regm2)
+_G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
+G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 
-print("Constructing warmstart...")
 if METHOD == "lbfgsb":
     save_path = "p_curves_lbfgsb"
     print("Using LBFGSB method.")
+    # okazuje sie ze nasz warmstart slabo dziala dla lbfgsb wiec trzeba sie poluzyc tym od md
+    sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
     _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 else:
     save_path = "p_curves_md"
     print("Using Mirror Descent method.")
-    _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
-G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
+
 print("Warmstart constructed.")
 
 shape = (len(p_values),)

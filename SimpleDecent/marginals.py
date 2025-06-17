@@ -38,18 +38,24 @@ C = 20
 max_iter = 1000
 
 # Data
+print("Constructing transport plan...")
+
 v1, v2, a, b, c, M, _G0 = construct_data(N, C)
 sparse = UtilsSparse(a, b, c, _G0, M, reg, regm1, regm2)
-print("Constructing transport plan...")
+_G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
+G = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
+
 if METHOD == "lbfgsb":
     save_path = "marginals_lbfgsb"
     print("Using LBFGSB method.")
+    # okazuje sie ze nasz warmstart slabo dziala dla lbfgsb wiec trzeba sie poluzyc tym od md
+    sparse = UtilsSparse(a, b, c, G, M, reg, regm1, regm2)
     _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    G = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 else:
     save_path = "marginals_md"
     print("Using Mirror Descent method.")
-    _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
-G = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
+
 print("Transport plan constructed.")
 
 G1 = np.array(G.sum(axis=1)).flatten()  # G * 1
@@ -58,7 +64,7 @@ G2 = np.array(G.sum(axis=0)).flatten()  # 1^T * G
 assert len(a) == len(G1) == len(v1), "Length mismatch in a, G1, and v1"
 assert len(b) == len(G2) == len(v2), "Length mismatch in b, G2, and v2"
 
-print("Sum of G:", np.sum(G))
+# print("Sum of G:", np.sum(G))
 
 os.makedirs(f"plots/{save_path}", exist_ok=True)
 
