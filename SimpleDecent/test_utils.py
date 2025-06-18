@@ -13,9 +13,245 @@ from scipy.optimize import minimize, Bounds
 from typing import List
 from ot.backend import get_backend
 import ot
+from numba import njit, prange
 
 sys.path.append(os.path.abspath(".."))
 from wasserstein import Spectrum, NMRSpectrum
+
+
+# --- Numba JIT-compiled Helper Functions (outside the class) ---
+# These functions now take all necessary data explicitly as arguments,
+# allowing Numba to compile them effectively in nopython mode.
+
+@njit
+def _compute_flat_length(matrix_data, offsets):
+    total_len = 0
+    for i in range(len(offsets)):
+        offset = offsets[i]
+        if offset < 0:
+            total_len += matrix_data[i].shape[0] + offset  # slice is [:offset]
+        else:
+            total_len += matrix_data[i].shape[0] - offset  # slice is [offset:]
+    return total_len
+
+@njit(parallel=True)
+def flatten_multidiagonal(matrix_data, offsets):
+    """
+    Flatten a multidiagonal matrix data into a 1D array using prange.
+
+    Parameters:
+        matrix_data: 2D NumPy array of shape (num_diagonals, m)
+        offsets: 1D array of diagonal offsets
+
+    Returns:
+        np.array: Flattened 1D array
+    """
+    num_diags = len(offsets)
+    # First compute total length
+    total_len = _compute_flat_length(matrix_data, offsets)
+
+    flat_vector = np.empty(total_len, dtype=matrix_data[0].dtype)
+    positions = np.empty(num_diags + 1, dtype=np.int32)
+    positions[0] = 0
+
+    # Prefix sum to get start positions for each diag
+    for i in range(num_diags):
+        offset = offsets[i]
+        if offset < 0:
+            diag_len = matrix_data[i].shape[0] + offset
+        else:
+            diag_len = matrix_data[i].shape[0] - offset
+        positions[i + 1] = positions[i] + diag_len
+
+    # Parallel fill
+    for i in prange(num_diags):
+        offset = offsets[i]
+        diag = matrix_data[i]
+        start = positions[i]
+
+        if offset < 0:
+            flat_vector[start:start + diag.shape[0] + offset] = diag[:offset]
+        else:
+            flat_vector[start:start + diag.shape[0] - offset] = diag[offset:]
+
+    return flat_vector
+
+@njit(parallel=True)
+def reconstruct_multidiagonal(flat_vector, offsets, N):
+    num_diags = len(offsets)
+    max_len = N
+    M_data = np.zeros((num_diags, max_len))
+
+    # Precompute the start index for each diagonal in flat_vector
+    ptrs = np.zeros(num_diags, dtype=np.int64)
+    ptr = 0
+    for i in range(num_diags):
+        ptrs[i] = ptr
+        ptr += N - abs(offsets[i])
+
+    # Fill M_data in parallel
+    for i in prange(num_diags):
+        offset = offsets[i]
+        diag_len = N - abs(offset)
+        start_ptr = ptrs[i]
+
+        for j in range(diag_len):
+            if offset < 0:
+                M_data[i, j] = flat_vector[start_ptr + j]
+            else:
+                M_data[i, j + offset] = flat_vector[start_ptr + j]
+
+    return M_data
+
+@njit(parallel=True)
+def _sparse_dot_numba(data1, offsets1, data2, offsets2):
+    tmp = np.zeros(len(offsets1))
+    for i in prange(len(offsets1)):
+        offset1 = offsets1[i]
+        for j in range(len(offsets2)):
+            offset2 = offsets2[j]
+            if offset1 == offset2:
+                diag1 = data1[i]
+                diag2 = data2[j]
+                min_len = min(len(diag1), len(diag2))
+                acc = 0.0
+                for k in range(min_len):
+                    acc += diag1[k] * diag2[k]
+                tmp[i] += acc
+    return np.sum(tmp)
+
+@njit(parallel=True)
+def _sparse_row_sum_numba(m, G_data, G_offsets):
+    """Jitted helper for sparse_row_sum."""
+    row_sums = np.zeros(m, dtype=G_data[0].dtype)
+    for k in prange(len(G_offsets)):
+        offset = G_offsets[k]
+        diag = G_data[k]
+        
+        # Determine the effective length of the diagonal within the matrix bounds
+        if offset == 0:  # Main diagonal
+            diag_start_row = 0
+            diag_len = m
+        elif offset < 0:  # Lower diagonal
+            diag_start_row = -offset
+            diag_len = m + offset
+        else:  # Upper diagonal
+            diag_start_row = 0
+            diag_len = m - offset
+
+        for i in range(diag_len):
+            row_sums[diag_start_row + i] += diag[i]
+    return row_sums
+
+@njit(parallel=True)
+def _sparse_col_sum_numba(m, G_data, G_offsets):
+    """Jitted helper for sparse_col_sum."""
+    col_sums = np.zeros(m, dtype=G_data[0].dtype)
+    for k in prange(len(G_offsets)):
+        offset = G_offsets[k]
+        diag = G_data[k]
+        
+        # Determine the effective length of the diagonal within the matrix bounds
+        if offset == 0: # Main diagonal
+            diag_start_col = 0
+            diag_len = m
+        elif offset < 0: # Lower diagonal
+            diag_start_col = 0
+            diag_len = m + offset
+        else: # Upper diagonal
+            diag_start_col = offset
+            diag_len = m - offset
+
+        for i in range(diag_len):
+            col_sums[diag_start_col + i] += diag[i]
+    return col_sums
+
+@njit(parallel=True)
+def _reg_kl_sparse_numba(c_data, m, G_data, G_offsets):
+    """Jitted helper for reg_kl_sparse."""
+    G_flat = flatten_multidiagonal(G_data, G_offsets)
+    C_flat = flatten_multidiagonal(c_data, G_offsets)
+
+    term1 = 0.0
+    for i in prange(len(G_flat)):
+        # Added 1e-16 to denominator and log input for numerical stability
+        term1 += G_flat[i] * np.log(G_flat[i] / (C_flat[i] + 1e-16) + 1e-16)
+
+    term2 = np.sum(C_flat - G_flat)
+    return term1 + term2
+
+@njit(parallel=True)
+def _grad_kl_sparse_numba(c_data, m, reg, G_data, G_offsets):
+    """Jitted helper for grad_kl_sparse."""
+    G_flat = flatten_multidiagonal(G_data, G_offsets)
+    C_flat = flatten_multidiagonal(c_data, G_offsets)
+
+    grad_flat = np.empty_like(G_flat)
+    for i in prange(len(G_flat)):
+        grad_flat[i] = np.log(G_flat[i] / (C_flat[i] + 1e-16) + 1e-16)
+
+    reconstructed_grad = reconstruct_multidiagonal(grad_flat, G_offsets, m)
+    
+    # Element-wise multiplication with reg on each array in the list
+    for i in prange(len(reconstructed_grad)):
+        reconstructed_grad[i] *= reg
+            
+    return reconstructed_grad
+
+@njit(parallel=True)
+def _marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
+    """Jitted helper for marg_tv_sparse."""
+    row_sums = _sparse_row_sum_numba(m, G_data, G_offsets)
+    col_sums = _sparse_col_sum_numba(m, G_data, G_offsets)
+    return reg_m1 * np.sum(np.abs(row_sums - a)) + \
+           reg_m2 * np.sum(np.abs(col_sums - b))
+
+@njit(parallel=True)
+def _marg_tv_sparse_rm1_numba(m, reg_m1, a, G_data, G_offsets):
+    """Jitted helper for marg_tv_sparse_rm1."""
+    row_sums = _sparse_row_sum_numba(m, G_data, G_offsets)
+    return reg_m1 * np.sum(np.abs(row_sums - a))
+
+@njit(parallel=True)
+def _marg_tv_sparse_rm2_numba(m, reg_m2, b, G_data, G_offsets):
+    """Jitted helper for marg_tv_sparse_rm2."""
+    col_sums = _sparse_col_sum_numba(m, G_data, G_offsets)
+    return reg_m2 * np.sum(np.abs(col_sums - b))
+
+@njit(parallel=True)
+def _grad_marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
+    """Jitted version of grad_marg_tv_sparse that returns padded 2D array like original."""
+    
+    # Compute row and column sums
+    row_sums = _sparse_row_sum_numba(m, G_data, G_offsets)
+    col_sums = _sparse_col_sum_numba(m, G_data, G_offsets)
+
+    # Compute sign vectors
+    row_signs = reg_m1 * np.sign(row_sums - a)
+    col_signs = reg_m2 * np.sign(col_sums - b)
+
+    num_diagonals = len(G_offsets)
+    grad_data_array = np.zeros((num_diagonals, m))  # full padded output
+
+    for i in prange(num_diagonals):
+        offset = G_offsets[i]
+
+        if offset == 0:
+            grad_data_array[i, :] = row_signs + col_signs
+
+        elif offset < 0:
+            k = -offset
+            diag_len = m - k
+            grad_diag = row_signs[k:] + col_signs[:diag_len]
+            grad_data_array[i, 0:diag_len] = grad_diag
+
+        else:  # offset > 0
+            diag_len = m - offset
+            grad_diag = row_signs[:diag_len] + col_signs[offset:]
+            grad_data_array[i, offset:offset + diag_len] = grad_diag
+
+    return grad_data_array
+
 
 # ------------------------------------------------------------------------------
 # Sparse Matrix Operations
@@ -154,59 +390,6 @@ def warmstart_sparse(p1, p2, C):
     return dia_matrix((np.array(diagonals), offsets), shape=(n, n), dtype=np.float64)
 
 
-def flatten_multidiagonal(matrix_data, offsets):
-    """
-    Flatten a multidiagonal matrix data into a 1D array.
-
-    Parameters:
-        matrix_data: Array of diagonal data
-        offsets: Array of diagonal offsets
-
-    Returns:
-        np.array: Flattened 1D array
-    """
-    flat_vector = []
-
-    for diag, offset in zip(matrix_data, offsets):
-        if offset < 0:
-            flat_vector.extend(diag[:offset])
-        else:
-            flat_vector.extend(diag[offset:])
-
-    return np.array(flat_vector)
-
-
-def reconstruct_multidiagonal(flat_vector, offsets, N):
-    """
-    Reconstruct the diagonal data from the flat vector.
-
-    Parameters:
-        flat_vector: Flat array of meaningful diagonal values
-        offsets: The offsets array
-        N: Size of the matrix (N x N)
-
-    Returns:
-        List of arrays containing the diagonal data
-    """
-    M_data = []
-    ptr = 0
-
-    for offset in offsets:
-        diag_length = N - abs(offset)
-        diag_values = flat_vector[ptr : ptr + diag_length]
-
-        # Reconstruct the diagonal with proper padding
-        if offset < 0:
-            padded_diag = np.pad(diag_values, (0, abs(offset)), mode="constant")
-        else:
-            padded_diag = np.pad(diag_values, (abs(offset), 0), mode="constant")
-
-        M_data.append(padded_diag)
-        ptr += diag_length
-
-    return np.array(M_data)
-
-
 # ------------------------------------------------------------------------------
 # Data Loading and Processing
 # ------------------------------------------------------------------------------
@@ -320,103 +503,6 @@ class UtilsSparse:
         self.reg_m1 = reg_m1
         self.reg_m2 = reg_m2
 
-    def sparse_dot(self, G_data, G_offsets):
-        """
-        Efficient dot product between two multidiagonal matrices.
-
-        Parameters:
-            G_data: Diagonal data of the second matrix
-            G_offsets: Offsets of the second matrix
-
-        Returns:
-            float: Dot product value
-        """
-        total = 0.0
-        for i, offset1 in enumerate(self.offsets):
-            for j, offset2 in enumerate(G_offsets):
-                if offset1 == offset2:
-                    min_len = min(len(self.data[i]), len(G_data[j]))
-                    total += np.sum(self.data[i][:min_len] * G_data[j][:min_len])
-        return total
-
-    def sparse_row_sum(self, G_data, G_offsets):
-        """Row sums for multidiagonal matrix (square matrix version)"""
-        row_sums = np.zeros(self.m)
-        for offset, diag in zip(G_offsets, G_data):
-            if offset == 0:  # Main diagonal
-                row_sums += diag[: self.m]
-            elif offset < 0:  # Lower diagonal
-                k = -offset
-                row_sums[k:] += diag[: self.m - k]
-            else:  # Upper diagonal
-                row_sums[:-offset] += diag[offset : offset + self.m - offset]
-        return row_sums
-
-    def sparse_col_sum(self, G_data, _G_offsets):
-        """Column sums for multidiagonal matrix (square matrix version)"""
-        col_sums = np.zeros(self.m)
-        for diag in G_data:
-            col_sums += diag
-        return col_sums
-
-    def reg_kl_sparse(self, G_data, G_offsets):
-        G_flat = flatten_multidiagonal(G_data, G_offsets)
-        C_flat = flatten_multidiagonal(self.c_data, G_offsets)
-
-        return np.sum(G_flat * np.log(G_flat / C_flat + 1e-16)) + np.sum(
-            C_flat - G_flat
-        )
-
-    def grad_kl_sparse(self, G_data, G_offsets):
-        """Gradient of KL divergence for sparse matrix"""
-        G_flat = flatten_multidiagonal(G_data, G_offsets)
-        C_flat = flatten_multidiagonal(self.c_data, G_offsets)
-
-        grad_flat = np.log(G_flat / C_flat + 1e-16)
-        return reconstruct_multidiagonal(grad_flat, G_offsets, self.m) * self.reg
-
-    def marg_tv_sparse(self, G_data, G_offsets):
-        """TV marginal penalty for sparse matrix"""
-        row_sums = self.sparse_row_sum(G_data, G_offsets)
-        col_sums = self.sparse_col_sum(G_data, G_offsets)
-        return self.reg_m1 * np.sum(np.abs(row_sums - self.a)) + self.reg_m2 * np.sum(
-            np.abs(col_sums - self.b)
-        )
-
-    def marg_tv_sparse_rm1(self, G_data, G_offsets):
-        """TV marginal penalty for sparse matrix"""
-        row_sums = self.sparse_row_sum(G_data, G_offsets)
-        return self.reg_m1 * np.sum(np.abs(row_sums - self.a))
-    
-    def marg_tv_sparse_rm2(self, G_data, G_offsets):
-        """TV marginal penalty for sparse matrix"""
-        col_sums = self.sparse_col_sum(G_data, G_offsets)
-        return self.reg_m2 * np.sum(np.abs(col_sums - self.b))
-
-    def grad_marg_tv_sparse(self, G_data, G_offsets):
-        """Gradient of TV marginal penalty"""
-        row_sums = self.sparse_row_sum(G_data, G_offsets)
-        col_sums = self.sparse_col_sum(G_data, G_offsets)
-
-        # Compute sign terms for rows and columns
-        row_signs = self.reg_m1 * np.sign(row_sums - self.a)
-        col_signs = self.reg_m2 * np.sign(col_sums - self.b)
-
-        grad_data = []
-        for offset in G_offsets:
-            if offset == 0:  # Main diagonal
-                grad_diag = row_signs + col_signs
-            elif offset < 0:  # Lower diagonal
-                k = -offset
-                grad_diag = row_signs[k:] + col_signs[: self.m - k]
-                grad_diag = np.pad(grad_diag, (0, k), "constant")
-            else:  # Upper diagonal
-                grad_diag = row_signs[: self.m - offset] + col_signs[offset:]
-                grad_diag = np.pad(grad_diag, (offset, 0), "constant")
-            grad_data.append(grad_diag)
-
-        return np.array(grad_data)
-
     def func_sparse(self, G_flat):
         """Combined loss function and gradient for sparse optimization"""
         # Reconstruct sparse matrix from flattened representation
@@ -438,6 +524,87 @@ class UtilsSparse:
         grad_flat = flatten_multidiagonal(grad, self.offsets)
 
         return val, grad_flat
+
+    def sparse_dot(self, G_data, G_offsets):
+        """
+        Efficient dot product between two multidiagonal matrices.
+        Calls a jitted helper function.
+        """
+        return _sparse_dot_numba(self.data, self.offsets, G_data, G_offsets)
+
+    def sparse_row_sum(self, G_data, G_offsets):
+        """Row sums for multidiagonal matrix. Calls a jitted helper."""
+        return _sparse_row_sum_numba(self.m, G_data, G_offsets)
+
+    def sparse_col_sum(self, G_data, _G_offsets):
+        """Column sums for multidiagonal matrix. Calls a jitted helper."""
+        return _sparse_col_sum_numba(self.m, G_data, _G_offsets)
+
+    def reg_kl_sparse(self, G_data, G_offsets):
+        """Calls a jitted helper for KL regularization."""
+        return _reg_kl_sparse_numba(self.c_data, self.m, G_data, G_offsets)
+
+    def grad_kl_sparse(self, G_data, G_offsets):
+        """Calls a jitted helper for KL gradient."""
+        return _grad_kl_sparse_numba(self.c_data, self.m, self.reg, G_data, G_offsets)
+
+    def marg_tv_sparse(self, G_data, G_offsets):
+        """Calls a jitted helper for TV marginal penalty."""
+        return _marg_tv_sparse_numba(
+            self.m, self.reg_m1, self.reg_m2, self.a, self.b, G_data, G_offsets
+        )
+
+    def marg_tv_sparse_rm1(self, G_data, G_offsets):
+        """Calls a jitted helper for row TV marginal penalty."""
+        return _marg_tv_sparse_rm1_numba(self.m, self.reg_m1, self.a, G_data, G_offsets)
+    
+    def marg_tv_sparse_rm2(self, G_data, G_offsets):
+        """Calls a jitted helper for column TV marginal penalty."""
+        return _marg_tv_sparse_rm2_numba(self.m, self.reg_m2, self.b, G_data, G_offsets)
+
+    def grad_marg_tv_sparse(self, G_data, G_offsets):
+        """Calls a jitted helper for TV marginal gradient."""
+        return _grad_marg_tv_sparse_numba(
+            self.m, self.reg_m1, self.reg_m2, self.a, self.b, G_data, G_offsets
+        )
+
+    # def func_sparse(self, G_flat):
+    #     """
+    #     Combined loss function and gradient for sparse optimization.
+    #     This function remains a standard Python method as it orchestrates calls
+    #     to jitted functions and interacts with non-jittable Python objects/structures
+    #     like lists of arrays and `scipy.optimize.minimize`.
+    #     """
+    #     # Reconstruct sparse matrix from flattened representation
+    #     G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
+
+    #     # Compute loss (these calls use the jitted helpers)
+    #     transport_cost = self.sparse_dot(G_data, self.offsets)
+    #     marginal_penalty = self.marg_tv_sparse(G_data, self.offsets)
+    #     val = transport_cost + marginal_penalty
+    #     if self.reg > 0:
+    #         val += self.reg_kl_sparse(G_data, self.offsets)
+
+    #     # Compute gradient (these calls use the jitted helpers)
+    #     # Create a new list for grad_data to avoid modifying self.data in place
+    #     grad_data = [arr.copy() for arr in self.data] 
+
+    #     grad_marg_data = self.grad_marg_tv_sparse(G_data, self.offsets)
+        
+    #     # Perform element-wise addition of arrays in the lists (Python loop)
+    #     for i in range(len(grad_data)):
+    #         # Assuming grad_data[i] and grad_marg_data[i] have compatible shapes
+    #         grad_data[i] += grad_marg_data[i]
+
+    #     if self.reg > 0:
+    #         grad_kl_data = self.grad_kl_sparse(G_data, self.offsets)
+    #         for i in range(len(grad_data)):
+    #             grad_data[i] += grad_kl_data[i]
+
+    #     # Flatten the combined gradient for the optimizer
+    #     grad_flat = flatten_multidiagonal(grad_data, self.offsets, self.m)
+
+    #     return val, grad_flat
 
     def lbfgsb_unbalanced(self, numItermax=1000, stopThr=1e-15):
         _func = self.func_sparse

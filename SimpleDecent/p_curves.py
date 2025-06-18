@@ -5,8 +5,8 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
-# METHOD = "mirror_descent"
-METHOD = "lbfgsb"
+METHOD = "mirror_descent"
+# METHOD = "lbfgsb"
 
 def construct_data(N, C, p):
     spectra, mix = load_data()
@@ -35,7 +35,7 @@ def construct_data(N, C, p):
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 400
+N = 1000
 C = 20
 max_iter = 1000
 p_values = np.linspace(0.3, 0.7, 32)
@@ -74,7 +74,7 @@ metrics_s1 = {
     "Marginal Penalty Normalized": new_grid()
 }
 
-os.makedirs(f"plots/{save_path}", exist_ok=True)
+os.makedirs(f"plots/jit/{save_path}", exist_ok=True)
 
 args_list = [(i, p) for i, p in enumerate(p_values)]
 
@@ -105,14 +105,14 @@ def process_wrapper(arg_tuple):
         "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2
     })
 
-if METHOD == "lbfgsb":
-    for i, p in tqdm(args_list, desc="Processing"):
-        results.append(process_wrapper((i, p)))
-else:
-    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-        futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-            results.append(future.result())
+# if METHOD == "lbfgsb":
+for i, p in tqdm(args_list, desc="Processing"):
+    results.append(process_wrapper((i, p)))
+# else:
+#     with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+#         futures = [executor.submit(process_wrapper, arg) for arg in args_list]
+#         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+#             results.append(future.result())
 
 # Fill metrics
 for i, metrics in results:
@@ -127,7 +127,7 @@ def plot_metric_curve(metric_name, y_vals, x_vals):
     plt.xlabel("p")
     plt.ylabel(metric_name)
     plt.grid(True)
-    plt.savefig(f"plots/{save_path}/{metric_name.lower().replace(' ', '_')}.png")
+    plt.savefig(f"plots/jit/{save_path}/{metric_name.lower().replace(' ', '_')}.png")
     plt.close()
 
 for metric in metrics_s1:
