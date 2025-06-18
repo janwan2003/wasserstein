@@ -35,7 +35,7 @@ regm2 = 115
 reg = 1.5
 N = 1000
 C = 20
-max_iter = 1000
+max_iter = 3000
 
 # Data
 print("Constructing transport plan...")
@@ -108,6 +108,9 @@ axs[2, 1].axhline(0, color='black', linestyle='--', linewidth=1)
 axs[2, 1].set_title('Delta target (b - 1ᵀ * G)')
 axs[2, 1].set_xlabel('v2')
 axs[2, 1].set_ylabel('Delta Mass')
+
+#title
+plt.suptitle(f'(2N={2*N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2}, maxiter={max_iter})', fontsize=16)
 
 plt.tight_layout()
 
