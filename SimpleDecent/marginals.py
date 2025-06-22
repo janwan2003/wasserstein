@@ -1,9 +1,20 @@
-from test_utils import *
+from test_utils import (
+    load_data,
+    signif_features,
+    Spectrum,
+    multidiagonal_cost,
+    warmstart_sparse,
+    reg_distribiution,
+    UtilsSparse,
+    dia_matrix,
+)
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # METHOD = "mirror_descent"
 METHOD = "lbfgsb"
+
 
 def construct_data(N, C):
     spectra, mix = load_data()
@@ -28,6 +39,7 @@ def construct_data(N, C):
     c = reg_distribiution(2 * N, C)
 
     return v1, v2, a, b, c, M, G0
+
 
 # Parameters
 regm1 = 230
@@ -72,45 +84,48 @@ os.makedirs(f"plots/{save_path}", exist_ok=True)
 fig, axs = plt.subplots(3, 2, figsize=(12, 12))
 
 # Top row
-axs[0, 0].scatter(v1, a, color='blue', s=10)
-axs[0, 0].set_title('Original source (a)')
-axs[0, 0].set_xlabel('v1')
-axs[0, 0].set_ylabel('Mass')
+axs[0, 0].scatter(v1, a, color="blue", s=10)
+axs[0, 0].set_title("Original source (a)")
+axs[0, 0].set_xlabel("v1")
+axs[0, 0].set_ylabel("Mass")
 
-axs[0, 1].scatter(v2, b, color='green', s=10)
-axs[0, 1].set_title('Original target (b)')
-axs[0, 1].set_xlabel('v2')
-axs[0, 1].set_ylabel('Mass')
+axs[0, 1].scatter(v2, b, color="green", s=10)
+axs[0, 1].set_title("Original target (b)")
+axs[0, 1].set_xlabel("v2")
+axs[0, 1].set_ylabel("Mass")
 
 # Middle row
-axs[1, 0].scatter(v1, G1, color='orange', s=10)
-axs[1, 0].set_title('Transported source (G * 1)')
-axs[1, 0].set_xlabel('v1')
-axs[1, 0].set_ylabel('Mass')
+axs[1, 0].scatter(v1, G1, color="orange", s=10)
+axs[1, 0].set_title("Transported source (G * 1)")
+axs[1, 0].set_xlabel("v1")
+axs[1, 0].set_ylabel("Mass")
 
-axs[1, 1].scatter(v2, G2, color='red', s=10)
-axs[1, 1].set_title('Transported target (1ᵀ * G)')
-axs[1, 1].set_xlabel('v2')
-axs[1, 1].set_ylabel('Mass')
+axs[1, 1].scatter(v2, G2, color="red", s=10)
+axs[1, 1].set_title("Transported target (1ᵀ * G)")
+axs[1, 1].set_xlabel("v2")
+axs[1, 1].set_ylabel("Mass")
 
 # Bottom row: Deltas
 delta_source = a - G1
 delta_target = b - G2
 
-axs[2, 0].scatter(v1, delta_source, color='purple', s=10)
-axs[2, 0].axhline(0, color='black', linestyle='--', linewidth=1)
-axs[2, 0].set_title('Delta source (a - G * 1)')
-axs[2, 0].set_xlabel('v1')
-axs[2, 0].set_ylabel('Delta Mass')
+axs[2, 0].scatter(v1, delta_source, color="purple", s=10)
+axs[2, 0].axhline(0, color="black", linestyle="--", linewidth=1)
+axs[2, 0].set_title("Delta source (a - G * 1)")
+axs[2, 0].set_xlabel("v1")
+axs[2, 0].set_ylabel("Delta Mass")
 
-axs[2, 1].scatter(v2, delta_target, color='brown', s=10)
-axs[2, 1].axhline(0, color='black', linestyle='--', linewidth=1)
-axs[2, 1].set_title('Delta target (b - 1ᵀ * G)')
-axs[2, 1].set_xlabel('v2')
-axs[2, 1].set_ylabel('Delta Mass')
+axs[2, 1].scatter(v2, delta_target, color="brown", s=10)
+axs[2, 1].axhline(0, color="black", linestyle="--", linewidth=1)
+axs[2, 1].set_title("Delta target (b - 1ᵀ * G)")
+axs[2, 1].set_xlabel("v2")
+axs[2, 1].set_ylabel("Delta Mass")
 
-#title
-plt.suptitle(f'(2N={2*N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2}, maxiter={max_iter})', fontsize=16)
+# title
+plt.suptitle(
+    f"(2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2}, maxiter={max_iter})",
+    fontsize=16,
+)
 
 plt.tight_layout()
 

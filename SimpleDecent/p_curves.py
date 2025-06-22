@@ -1,12 +1,23 @@
-from test_utils import *
+from test_utils import (
+    load_data,
+    signif_features,
+    Spectrum,
+    multidiagonal_cost,
+    reg_distribiution,
+    warmstart_sparse,
+    UtilsSparse,
+    dia_matrix,
+)
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+import os
 
 # METHOD = "mirror_descent"
 METHOD = "lbfgsb"
+
 
 def construct_data(N, C, p):
     spectra, mix = load_data()
@@ -30,6 +41,7 @@ def construct_data(N, C, p):
     c = reg_distribiution(2 * N, C)
 
     return a, b, c, M
+
 
 # Parameters
 regm1 = 230
@@ -64,14 +76,17 @@ print("Warmstart constructed.")
 
 shape = (len(p_values),)
 
-def new_grid(): return np.zeros(shape)
+
+def new_grid():
+    return np.zeros(shape)
+
 
 metrics_s1 = {
     "Total Cost": new_grid(),
     "Transport Cost": new_grid(),
     "Regularization Term": new_grid(),
     "Marginal Penalty": new_grid(),
-    "Marginal Penalty Normalized": new_grid()
+    "Marginal Penalty Normalized": new_grid(),
 }
 
 os.makedirs(f"plots/{save_path}", exist_ok=True)
@@ -79,6 +94,7 @@ os.makedirs(f"plots/{save_path}", exist_ok=True)
 args_list = [(i, p) for i, p in enumerate(p_values)]
 
 results = []
+
 
 def process_wrapper(arg_tuple):
     i, p = arg_tuple
@@ -95,15 +111,19 @@ def process_wrapper(arg_tuple):
     tc = sparse.sparse_dot(G, sparse.offsets)
     reg_val = sparse.reg_kl_sparse(G, sparse.offsets)
     marg_rm1 = sparse.marg_tv_sparse_rm1(G, sparse.offsets)
-    marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)    
+    marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)
 
-    return (i, {
-        "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
-        "Transport Cost": tc,
-        "Regularization Term": reg_val,
-        "Marginal Penalty": marg_rm1 + marg_rm2,
-        "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2
-    })
+    return (
+        i,
+        {
+            "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
+            "Transport Cost": tc,
+            "Regularization Term": reg_val,
+            "Marginal Penalty": marg_rm1 + marg_rm2,
+            "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2,
+        },
+    )
+
 
 if METHOD == "lbfgsb":
     for i, p in tqdm(args_list, desc="Processing"):
@@ -111,7 +131,9 @@ if METHOD == "lbfgsb":
 else:
     with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
         futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Processing"
+        ):
             results.append(future.result())
 
 # Fill metrics
@@ -119,16 +141,20 @@ for i, metrics in results:
     for key in metrics_s1.keys():
         metrics_s1[key][i] = metrics[key]
 
+
 # Plot curves
 def plot_metric_curve(metric_name, y_vals, x_vals):
     plt.figure(figsize=(10, 6))
-    plt.plot(x_vals, y_vals, marker='o')
-    plt.title(f"Metric: {metric_name} vs p (2N={2*N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2})")
+    plt.plot(x_vals, y_vals, marker="o")
+    plt.title(
+        f"Metric: {metric_name} vs p (2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2})"
+    )
     plt.xlabel("p")
     plt.ylabel(metric_name)
     plt.grid(True)
     plt.savefig(f"plots/{save_path}/{metric_name.lower().replace(' ', '_')}.png")
     plt.close()
+
 
 for metric in metrics_s1:
     plot_metric_curve(metric, metrics_s1[metric], p_values)

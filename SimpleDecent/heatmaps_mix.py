@@ -1,12 +1,23 @@
-from test_utils import *
+from test_utils import (
+    load_data,
+    signif_features,
+    Spectrum,
+    multidiagonal_cost,
+    reg_distribiution,
+    warmstart_sparse,
+    UtilsSparse,
+    dia_matrix,
+)
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 import multiprocessing
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # METHOD = "mirror_descent"
 METHOD = "lbfgsb"
+
 
 def construct_data(N, C):
     spectra, mix = load_data()
@@ -31,6 +42,7 @@ def construct_data(N, C):
     c = reg_distribiution(2 * N, C)
 
     return a, b, c, M
+
 
 # Parameters
 regm1_values = np.linspace(200, 400, num=20)
@@ -61,22 +73,30 @@ print("Warmstart constructed.")
 
 shape = (len(regm1_values), len(regm2_values))
 
+
 # Initialize metric containers
-def new_grid(): return np.zeros(shape)
+def new_grid():
+    return np.zeros(shape)
+
+
 metrics_s1 = {
     "Total Cost": new_grid(),
     "Transport Cost": new_grid(),
     "Regularization Term": new_grid(),
     "Marginal Penalty": new_grid(),
-    "Marginal Penalty Normalized": new_grid()
+    "Marginal Penalty Normalized": new_grid(),
 }
 
 os.makedirs(f"plots/{save_path}/heatmaps_mix", exist_ok=True)
 
-args_list = [(i, j, regm1, regm2) for i, regm1 in enumerate(regm1_values)
-                                    for j, regm2 in enumerate(regm2_values)]
+args_list = [
+    (i, j, regm1, regm2)
+    for i, regm1 in enumerate(regm1_values)
+    for j, regm2 in enumerate(regm2_values)
+]
 
 results = []
+
 
 def process_wrapper(arg_tuple):
     i, j, regm1, regm2 = arg_tuple
@@ -91,15 +111,20 @@ def process_wrapper(arg_tuple):
     reg_val = sparse.reg_kl_sparse(G, sparse.offsets)
     # marg1 = sparse.marg_tv_sparse(G, sparse.offsets)
     marg_rm1 = sparse.marg_tv_sparse_rm1(G, sparse.offsets)
-    marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)    
+    marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)
 
-    return (i, j, {
-        "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
-        "Transport Cost": tc,
-        "Regularization Term": reg_val,
-        "Marginal Penalty": marg_rm1 + marg_rm2,
-        "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2
-    })
+    return (
+        i,
+        j,
+        {
+            "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
+            "Transport Cost": tc,
+            "Regularization Term": reg_val,
+            "Marginal Penalty": marg_rm1 + marg_rm2,
+            "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2,
+        },
+    )
+
 
 if METHOD == "lbfgsb":
     for i, p in tqdm(args_list, desc="Processing"):
@@ -107,7 +132,9 @@ if METHOD == "lbfgsb":
 else:
     with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
         futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Processing"
+        ):
             results.append(future.result())
 
 for i, j, metrics in results:
@@ -115,12 +142,13 @@ for i, j, metrics in results:
         val1 = metrics[key]
         metrics_s1[key][i, j] = val1
 
+
 def plot_heatmap_grid(metric_name, data, xvals, yvals):
     fig, ax = plt.subplots(figsize=(11, 11))
 
-    im = ax.imshow(data, origin='lower', cmap='viridis')
+    im = ax.imshow(data, origin="lower", cmap="viridis")
 
-    ax.set_title(f"2*N: {2*N}, C: {C}, reg: {reg} — 40/60 mix: {metric_name}")
+    ax.set_title(f"2*N: {2 * N}, C: {C}, reg: {reg} — 40/60 mix: {metric_name}")
     ax.set_xlabel("regm2")
     ax.set_ylabel("regm1")
 
@@ -133,18 +161,29 @@ def plot_heatmap_grid(metric_name, data, xvals, yvals):
 
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
-            ax.text(j, i, f"{data[i, j]:.2f}",
-                    ha="center", va="center", color="white", fontsize=6, weight='bold')
+            ax.text(
+                j,
+                i,
+                f"{data[i, j]:.2f}",
+                ha="center",
+                va="center",
+                color="white",
+                fontsize=6,
+                weight="bold",
+            )
 
     cbar = ax.figure.colorbar(im, ax=ax)
     cbar.set_label(metric_name)
 
-    ax.set_aspect('equal')
+    ax.set_aspect("equal")
     plt.tight_layout()
 
-    filepath = f"plots/{save_path}/heatmaps_mix/{metric_name.lower().replace(' ', '_')}.png"
+    filepath = (
+        f"plots/{save_path}/heatmaps_mix/{metric_name.lower().replace(' ', '_')}.png"
+    )
     plt.savefig(filepath)
     plt.close()
+
 
 for metric in metrics_s1.keys():
     plot_heatmap_grid(metric, metrics_s1[metric], regm2_values, regm1_values)

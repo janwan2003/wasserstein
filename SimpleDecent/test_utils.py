@@ -387,7 +387,7 @@ class UtilsSparse:
         """TV marginal penalty for sparse matrix"""
         row_sums = self.sparse_row_sum(G_data, G_offsets)
         return self.reg_m1 * np.sum(np.abs(row_sums - self.a))
-    
+
     def marg_tv_sparse_rm2(self, G_data, G_offsets):
         """TV marginal penalty for sparse matrix"""
         col_sums = self.sparse_col_sum(G_data, G_offsets)
@@ -456,8 +456,8 @@ class UtilsSparse:
             bounds=Bounds(0, np.inf),
             tol=stopThr,
             options={
-                # "ftol": 1e-12, 
-                # "gtol": 1e-8, 
+                # "ftol": 1e-12,
+                # "gtol": 1e-8,
                 "maxiter": numItermax
             },
         )
@@ -472,7 +472,9 @@ class UtilsSparse:
         # print(res)
         return G, log
 
-    def mirror_descent_unbalanced(self, numItermax=1000, step_size=0.1, stopThr=1e-9):
+    def mirror_descent_unbalanced(
+        self, numItermax=1000, step_size=0.0001, stopThr=1e-4, gamma=1.0, patience=100
+    ):
         """
         Solves the unbalanced OT problem using mirror descent with exponential updates.
 
@@ -480,6 +482,7 @@ class UtilsSparse:
             numItermax (int): Maximum number of iterations
             step_size (float): Fixed step size for gradient updates
             stopThr (float): Stopping threshold for relative change in objective
+            patience (int): Number of iterations with no improvement to wait before stopping.
 
         Returns:
             tuple: (G, log) where G is the optimal transport plan and log contains information about the optimization
@@ -494,8 +497,9 @@ class UtilsSparse:
 
         log = {
             "loss": [val_prev],
-            "step_sizes": [step_size], # ?
         }
+
+        stalled_iterations = 0
 
         for i in range(numItermax):
             grad_flat_clipped = np.clip(grad_flat, -100, 100)
@@ -507,9 +511,13 @@ class UtilsSparse:
 
             rel_change = abs(val_new - val_prev) / max(abs(val_prev), 1e-10)
             log["loss"].append(val_new)
-            log["step_sizes"].append(step_size) # ?
 
             if rel_change < stopThr:
+                stalled_iterations += 1
+            else:
+                stalled_iterations = 0
+
+            if stalled_iterations >= patience:
                 log["convergence"] = True
                 log["iterations"] = i + 1
                 G_flat = G_flat_new
@@ -518,6 +526,7 @@ class UtilsSparse:
             G_flat = G_flat_new
             grad_flat = grad_flat_new
             val_prev = val_new
+            step_size *= gamma
 
         else:
             log["convergence"] = False
@@ -678,15 +687,11 @@ def test_sparse(N, C, p, reg, reg_m1, reg_m2, max_iter=5000, debug=False):
     if debug:
         emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
         print(f"EMD: {emd}")
-        print(
-            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}"
-        )
+        print(f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}")
         print("Transport cost: ", transport_cost)
         print("Regularization term:", regularization_term)
         print("Marginal penalty: ", marginal_penalty)
-        print(
-            "Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2)
-        )
+        print("Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2))
         print(
             "Final distance: ",
             (transport_cost + marginal_penalty / (reg_m1 + reg_m2)),
@@ -721,6 +726,7 @@ def test_sparse_mirror_descent(
     reg,
     reg_m1,
     reg_m2,
+    gamma=0.9,
     max_iter=5000,
     step_size=0.1,
     debug=False,
@@ -771,7 +777,7 @@ def test_sparse_mirror_descent(
     # Use mirror descent instead of L-BFGS-B
     start_time = time.time()
     G, log_s = sparse.mirror_descent_unbalanced(
-        numItermax=max_iter, step_size=step_size
+        numItermax=max_iter, step_size=step_size, gamma=gamma
     )
     end_time = time.time()
 
@@ -783,9 +789,7 @@ def test_sparse_mirror_descent(
     if debug:
         emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
         print(f"EMD: {emd}")
-        print(
-            f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}"
-        )
+        print(f"N: {N}, C: {C}, p: {p}, reg: {reg}, reg_m1: {reg_m1}, reg_m2: {reg_m2}")
         print("Optimization method: Mirror Descent")
         print(f"Iterations: {log_s.get('iterations', max_iter)}")
         print(f"Converged: {log_s.get('convergence', False)}")
@@ -793,9 +797,7 @@ def test_sparse_mirror_descent(
         print("Transport cost: ", transport_cost)
         print("Regularization term:", regularization_term)
         print("Marginal penalty: ", marginal_penalty)
-        print(
-            "Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2)
-        )
+        print("Marginal penalty normalized: ", marginal_penalty / (reg_m1 + reg_m2))
         print(
             "Final distance: ",
             (transport_cost + marginal_penalty / (reg_m1 + reg_m2)),
