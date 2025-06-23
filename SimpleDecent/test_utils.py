@@ -22,85 +22,137 @@ from wasserstein import Spectrum, NMRSpectrum
 # These functions now take all necessary data explicitly as arguments,
 # allowing Numba to compile them effectively in nopython mode.
 
-@njit
-def _compute_flat_length(matrix_data, offsets):
-    total_len = 0
-    for i in range(len(offsets)):
-        offset = offsets[i]
-        if offset < 0:
-            total_len += matrix_data[i].shape[0] + offset  # slice is [:offset]
-        else:
-            total_len += matrix_data[i].shape[0] - offset  # slice is [offset:]
-    return total_len
+# @njit
+# def _compute_flat_length(matrix_data, offsets):
+#     total_len = 0
+#     for i in range(len(offsets)):
+#         offset = offsets[i]
+#         if offset < 0:
+#             total_len += matrix_data[i].shape[0] + offset  # slice is [:offset]
+#         else:
+#             total_len += matrix_data[i].shape[0] - offset  # slice is [offset:]
+#     return total_len
 
+# @njit
+# def flatten_multidiagonal(matrix_data, offsets):
+#     """
+#     Flatten a multidiagonal matrix data into a 1D array using prange.
+
+#     Parameters:
+#         matrix_data: 2D NumPy array of shape (num_diagonals, m)
+#         offsets: 1D array of diagonal offsets
+
+#     Returns:
+#         np.array: Flattened 1D array
+#     """
+#     num_diags = len(offsets)
+#     # First compute total length
+#     total_len = _compute_flat_length(matrix_data, offsets)
+
+#     flat_vector = np.empty(total_len, dtype=matrix_data[0].dtype)
+#     positions = np.empty(num_diags + 1, dtype=np.int32)
+#     positions[0] = 0
+
+#     # Prefix sum to get start positions for each diag
+#     for i in range(num_diags):
+#         offset = offsets[i]
+#         if offset < 0:
+#             diag_len = matrix_data[i].shape[0] + offset
+#         else:
+#             diag_len = matrix_data[i].shape[0] - offset
+#         positions[i + 1] = positions[i] + diag_len
+
+#     # Parallel fill
+#     for i in range(num_diags):
+#         offset = offsets[i]
+#         diag = matrix_data[i]
+#         start = positions[i]
+
+#         if offset < 0:
+#             flat_vector[start:start + diag.shape[0] + offset] = diag[:offset]
+#         else:
+#             flat_vector[start:start + diag.shape[0] - offset] = diag[offset:]
+
+#     return flat_vector
+
+# @njit
+# def reconstruct_multidiagonal(flat_vector, offsets, N):
+#     num_diags = len(offsets)
+#     max_len = N
+#     M_data = np.zeros((num_diags, max_len))
+
+#     # Precompute the start index for each diagonal in flat_vector
+#     ptrs = np.zeros(num_diags, dtype=np.int64)
+#     ptr = 0
+#     for i in range(num_diags):
+#         ptrs[i] = ptr
+#         ptr += N - abs(offsets[i])
+
+#     # Fill M_data in parallel
+#     for i in range(num_diags):
+#         offset = offsets[i]
+#         diag_len = N - abs(offset)
+#         start_ptr = ptrs[i]
+
+#         for j in range(diag_len):
+#             if offset < 0:
+#                 M_data[i, j] = flat_vector[start_ptr + j]
+#             else:
+#                 M_data[i, j + offset] = flat_vector[start_ptr + j]
+
+#     return M_data
 @njit
 def flatten_multidiagonal(matrix_data, offsets):
     """
-    Flatten a multidiagonal matrix data into a 1D array using prange.
+    Flatten a multidiagonal matrix data into a 1D array.
 
     Parameters:
-        matrix_data: 2D NumPy array of shape (num_diagonals, m)
-        offsets: 1D array of diagonal offsets
+        matrix_data: Array of diagonal data
+        offsets: Array of diagonal offsets
 
     Returns:
         np.array: Flattened 1D array
     """
-    num_diags = len(offsets)
-    # First compute total length
-    total_len = _compute_flat_length(matrix_data, offsets)
+    flat_vector = []
 
-    flat_vector = np.empty(total_len, dtype=matrix_data[0].dtype)
-    positions = np.empty(num_diags + 1, dtype=np.int32)
-    positions[0] = 0
-
-    # Prefix sum to get start positions for each diag
-    for i in range(num_diags):
-        offset = offsets[i]
+    for diag, offset in zip(matrix_data, offsets):
         if offset < 0:
-            diag_len = matrix_data[i].shape[0] + offset
+            flat_vector.extend(diag[:offset])
         else:
-            diag_len = matrix_data[i].shape[0] - offset
-        positions[i + 1] = positions[i] + diag_len
+            flat_vector.extend(diag[offset:])
 
-    # Parallel fill
-    for i in range(num_diags):
-        offset = offsets[i]
-        diag = matrix_data[i]
-        start = positions[i]
-
-        if offset < 0:
-            flat_vector[start:start + diag.shape[0] + offset] = diag[:offset]
-        else:
-            flat_vector[start:start + diag.shape[0] - offset] = diag[offset:]
-
-    return flat_vector
+    return np.array(flat_vector)
 
 @njit
 def reconstruct_multidiagonal(flat_vector, offsets, N):
-    num_diags = len(offsets)
-    max_len = N
-    M_data = np.zeros((num_diags, max_len))
-
-    # Precompute the start index for each diagonal in flat_vector
-    ptrs = np.zeros(num_diags, dtype=np.int64)
+    M_data = []
     ptr = 0
-    for i in range(num_diags):
-        ptrs[i] = ptr
-        ptr += N - abs(offsets[i])
 
-    # Fill M_data in parallel
-    for i in range(num_diags):
+    for i in range(len(offsets)):
         offset = offsets[i]
-        diag_len = N - abs(offset)
-        start_ptr = ptrs[i]
+        diag_length = N - abs(offset)
 
-        for j in range(diag_len):
+        # Create a zero array of length N
+        padded_diag = np.zeros(N, dtype=flat_vector.dtype)
+
+        # Copy diag_values into padded_diag with correct offset
+        for j in range(diag_length):
             if offset < 0:
-                M_data[i, j] = flat_vector[start_ptr + j]
+                # Place diag_values starting at index j (pad right side)
+                padded_diag[j] = flat_vector[ptr + j]
             else:
-                M_data[i, j + offset] = flat_vector[start_ptr + j]
+                # Place diag_values starting at index abs(offset) (pad left side)
+                padded_diag[abs(offset) + j] = flat_vector[ptr + j]
 
-    return M_data
+        ptr += diag_length
+        M_data.append(padded_diag)
+
+    # Convert list to 2D array
+    result = np.empty((len(offsets), N), dtype=flat_vector.dtype)
+    for i in range(len(M_data)):
+        result[i, :] = M_data[i]
+
+    return result
 
 @njit
 def _sparse_dot_numba(data1, offsets1, data2, offsets2):
