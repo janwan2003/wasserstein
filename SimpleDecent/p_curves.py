@@ -105,14 +105,14 @@ def process_wrapper(arg_tuple):
         "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2
     })
 
-# if METHOD == "lbfgsb":
-for i, p in tqdm(args_list, desc="Processing"):
-    results.append(process_wrapper((i, p)))
-# else:
-#     with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-#         futures = [executor.submit(process_wrapper, arg) for arg in args_list]
-#         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-#             results.append(future.result())
+if METHOD == "lbfgsb":
+    for i, p in tqdm(args_list, desc="Processing"):
+        results.append(process_wrapper((i, p)))
+else:
+    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+        futures = [executor.submit(process_wrapper, arg) for arg in args_list]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+            results.append(future.result())
 
 # Fill metrics
 for i, metrics in results:

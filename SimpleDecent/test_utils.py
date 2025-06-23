@@ -13,8 +13,7 @@ from scipy.optimize import minimize, Bounds
 from typing import List
 from ot.backend import get_backend
 import ot
-from numba import njit, prange
-
+from numba import njit
 sys.path.append(os.path.abspath(".."))
 from wasserstein import Spectrum, NMRSpectrum
 
@@ -34,7 +33,7 @@ def _compute_flat_length(matrix_data, offsets):
             total_len += matrix_data[i].shape[0] - offset  # slice is [offset:]
     return total_len
 
-@njit(parallel=True)
+@njit
 def flatten_multidiagonal(matrix_data, offsets):
     """
     Flatten a multidiagonal matrix data into a 1D array using prange.
@@ -64,7 +63,7 @@ def flatten_multidiagonal(matrix_data, offsets):
         positions[i + 1] = positions[i] + diag_len
 
     # Parallel fill
-    for i in prange(num_diags):
+    for i in range(num_diags):
         offset = offsets[i]
         diag = matrix_data[i]
         start = positions[i]
@@ -76,7 +75,7 @@ def flatten_multidiagonal(matrix_data, offsets):
 
     return flat_vector
 
-@njit(parallel=True)
+@njit
 def reconstruct_multidiagonal(flat_vector, offsets, N):
     num_diags = len(offsets)
     max_len = N
@@ -90,7 +89,7 @@ def reconstruct_multidiagonal(flat_vector, offsets, N):
         ptr += N - abs(offsets[i])
 
     # Fill M_data in parallel
-    for i in prange(num_diags):
+    for i in range(num_diags):
         offset = offsets[i]
         diag_len = N - abs(offset)
         start_ptr = ptrs[i]
@@ -103,10 +102,10 @@ def reconstruct_multidiagonal(flat_vector, offsets, N):
 
     return M_data
 
-@njit(parallel=True)
+@njit
 def _sparse_dot_numba(data1, offsets1, data2, offsets2):
     tmp = np.zeros(len(offsets1))
-    for i in prange(len(offsets1)):
+    for i in range(len(offsets1)):
         offset1 = offsets1[i]
         for j in range(len(offsets2)):
             offset2 = offsets2[j]
@@ -120,11 +119,11 @@ def _sparse_dot_numba(data1, offsets1, data2, offsets2):
                 tmp[i] += acc
     return np.sum(tmp)
 
-@njit(parallel=True)
+@njit
 def _sparse_row_sum_numba(m, G_data, G_offsets):
     """Jitted helper for sparse_row_sum."""
     row_sums = np.zeros(m, dtype=G_data[0].dtype)
-    for k in prange(len(G_offsets)):
+    for k in range(len(G_offsets)):
         offset = G_offsets[k]
         diag = G_data[k]
         
@@ -143,11 +142,11 @@ def _sparse_row_sum_numba(m, G_data, G_offsets):
             row_sums[diag_start_row + i] += diag[i]
     return row_sums
 
-@njit(parallel=True)
+@njit
 def _sparse_col_sum_numba(m, G_data, G_offsets):
     """Jitted helper for sparse_col_sum."""
     col_sums = np.zeros(m, dtype=G_data[0].dtype)
-    for k in prange(len(G_offsets)):
+    for k in range(len(G_offsets)):
         offset = G_offsets[k]
         diag = G_data[k]
         
@@ -166,39 +165,39 @@ def _sparse_col_sum_numba(m, G_data, G_offsets):
             col_sums[diag_start_col + i] += diag[i]
     return col_sums
 
-@njit(parallel=True)
+@njit
 def _reg_kl_sparse_numba(c_data, m, G_data, G_offsets):
     """Jitted helper for reg_kl_sparse."""
     G_flat = flatten_multidiagonal(G_data, G_offsets)
     C_flat = flatten_multidiagonal(c_data, G_offsets)
 
     term1 = 0.0
-    for i in prange(len(G_flat)):
+    for i in range(len(G_flat)):
         # Added 1e-16 to denominator and log input for numerical stability
         term1 += G_flat[i] * np.log(G_flat[i] / (C_flat[i] + 1e-16) + 1e-16)
 
     term2 = np.sum(C_flat - G_flat)
     return term1 + term2
 
-@njit(parallel=True)
+@njit
 def _grad_kl_sparse_numba(c_data, m, reg, G_data, G_offsets):
     """Jitted helper for grad_kl_sparse."""
     G_flat = flatten_multidiagonal(G_data, G_offsets)
     C_flat = flatten_multidiagonal(c_data, G_offsets)
 
     grad_flat = np.empty_like(G_flat)
-    for i in prange(len(G_flat)):
+    for i in range(len(G_flat)):
         grad_flat[i] = np.log(G_flat[i] / (C_flat[i] + 1e-16) + 1e-16)
 
     reconstructed_grad = reconstruct_multidiagonal(grad_flat, G_offsets, m)
     
     # Element-wise multiplication with reg on each array in the list
-    for i in prange(len(reconstructed_grad)):
+    for i in range(len(reconstructed_grad)):
         reconstructed_grad[i] *= reg
             
     return reconstructed_grad
 
-@njit(parallel=True)
+@njit
 def _marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
     """Jitted helper for marg_tv_sparse."""
     row_sums = _sparse_row_sum_numba(m, G_data, G_offsets)
@@ -206,19 +205,19 @@ def _marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
     return reg_m1 * np.sum(np.abs(row_sums - a)) + \
            reg_m2 * np.sum(np.abs(col_sums - b))
 
-@njit(parallel=True)
+@njit
 def _marg_tv_sparse_rm1_numba(m, reg_m1, a, G_data, G_offsets):
     """Jitted helper for marg_tv_sparse_rm1."""
     row_sums = _sparse_row_sum_numba(m, G_data, G_offsets)
     return reg_m1 * np.sum(np.abs(row_sums - a))
 
-@njit(parallel=True)
+@njit
 def _marg_tv_sparse_rm2_numba(m, reg_m2, b, G_data, G_offsets):
     """Jitted helper for marg_tv_sparse_rm2."""
     col_sums = _sparse_col_sum_numba(m, G_data, G_offsets)
     return reg_m2 * np.sum(np.abs(col_sums - b))
 
-@njit(parallel=True)
+@njit
 def _grad_marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
     """Jitted version of grad_marg_tv_sparse that returns padded 2D array like original."""
     
@@ -233,7 +232,7 @@ def _grad_marg_tv_sparse_numba(m, reg_m1, reg_m2, a, b, G_data, G_offsets):
     num_diagonals = len(G_offsets)
     grad_data_array = np.zeros((num_diagonals, m))  # full padded output
 
-    for i in prange(num_diagonals):
+    for i in range(num_diagonals):
         offset = G_offsets[i]
 
         if offset == 0:
