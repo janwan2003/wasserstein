@@ -64,8 +64,8 @@ def get_optimal_p(N, C, reg, regm1, regm2, p_values, max_iter, gamma, step_size)
     if not results:
         return None, float("inf")
 
-    # Find the value of p that minimizes the total cost
-    costs = [res[1]["Total Cost"] for res in results]
+    # Find the value of p that minimizes the final distance
+    costs = [res[1]["final distance"] for res in results]
     min_cost_index = np.argmin(costs)
     optimal_p = results[min_cost_index][0]
     min_cost = costs[min_cost_index]
@@ -93,17 +93,11 @@ def process_wrapper(arg_tuple):
             numItermax=max_iter, gamma=gamma, step_size=step_size
         )
 
-    tc = sparse.sparse_dot(G, sparse.offsets)
-    reg_val = sparse.reg_kl_sparse(G, sparse.offsets)
-    marg_rm1 = sparse.marg_tv_sparse_rm1(G, sparse.offsets)
-    marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)
-
+    transport_cost = sparse.sparse_dot(G, sparse.offsets)
+    marginal_penalty = sparse.marg_tv_sparse(G, sparse.offsets)
+    final_distance = transport_cost + marginal_penalty / (regm1 + regm2)
     metrics = {
-        "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
-        "Transport Cost": tc,
-        "Regularization Term": reg_val,
-        "Marginal Penalty": marg_rm1 + marg_rm2,
-        "Marginal Penalty Normalized": (marg_rm1 / regm1) + (marg_rm2 / regm2),
+        "final distance": final_distance,
     }
     return p, metrics
 
@@ -159,17 +153,17 @@ def main():
     Main function to run the hyperparameter search and generate a heatmap.
     """
     # Fixed parameters for the experiment
-    N = 2000
+    N = 1000
     C = 20
     reg = 1.5
-    max_iter = 1500
-    step_size = 0.00001
-    gamma = 1.0 - (1.0 / max_iter) * np.e
+    max_iter = 1000
+    step_size = 0.001
+    gamma = 1.0 - (20.0 / max_iter)
     p_values = np.linspace(0.3, 0.6, 30)
 
     # Define the hyperparameter search space for the heatmap
-    regm1_values = np.linspace(100, 250, num=10)
-    regm2_values = np.linspace(100, 250, num=10)
+    regm1_values = np.linspace(1, 300, num=20)
+    regm2_values = np.linspace(1, 300, num=20)
 
     heatmap_data = np.zeros((len(regm1_values), len(regm2_values)))
 
