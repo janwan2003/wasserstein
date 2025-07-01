@@ -1,4 +1,5 @@
 import math
+
 # import IsoSpecPy
 import numpy as np
 from scipy.stats import uniform, gamma
@@ -290,7 +291,7 @@ class Spectrum:
         if not np.isclose(sum(x[1] for x in other.confs), 1.0):
             raise ValueError("Other is not normalized.")
         return math.fsum(abs(x[0] - x[1]) * x[2] for x in self.WSDistanceMoves(other))
-    
+
     def WSGradient(self, target, epsilon=1e-5):
         """
         Compute numerical gradient of WSDistance with respect to mz values of `source`

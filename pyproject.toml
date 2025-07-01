@@ -19,6 +19,8 @@ pot = ">=0.9.5,<0.10.0"
 torch = ">=2.6.0,<3.0.0"
 optimal-transport = "^0.0.1"
 ruff = "^0.11.11"
+seaborn = "^0.13.2"
+scienceplots = "^2.1.1"
 
 [build-system]
 requires = ["poetry-core"]

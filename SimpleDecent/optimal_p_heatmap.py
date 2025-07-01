@@ -90,7 +90,11 @@ def process_wrapper(arg_tuple):
         G, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
     else:
         G, _ = sparse.mirror_descent_unbalanced(
-            numItermax=max_iter, gamma=gamma, step_size=step_size
+            numItermax=max_iter,
+            gamma=gamma,
+            step_size=step_size,
+            stopThr=1e-6,
+            patience=100,
         )
 
     transport_cost = sparse.sparse_dot(G, sparse.offsets)
@@ -140,7 +144,7 @@ def plot_heatmap_grid(metric_name, data, xvals, yvals, N, C, reg):
     ax.set_aspect("equal")
     plt.tight_layout()
 
-    save_path = "plots/optimal_p_heatmap"
+    save_path = "plots/optimal_p_heatmap_lowregs"
     os.makedirs(save_path, exist_ok=True)
     filepath = f"{save_path}/{metric_name.lower().replace(' ', '_')}.png"
     plt.savefig(filepath)
@@ -159,11 +163,11 @@ def main():
     max_iter = 1000
     step_size = 0.001
     gamma = 1.0 - (20.0 / max_iter)
-    p_values = np.linspace(0.3, 0.6, 30)
+    p_values = np.linspace(0.3, 0.5, 24)
 
     # Define the hyperparameter search space for the heatmap
-    regm1_values = np.linspace(1, 300, num=20)
-    regm2_values = np.linspace(1, 300, num=20)
+    regm1_values = np.logspace(np.log2(0.1), np.log2(10), num=10, base=2)
+    regm2_values = np.logspace(np.log2(0.1), np.log2(10), num=10, base=2)
 
     heatmap_data = np.zeros((len(regm1_values), len(regm2_values)))
 
@@ -175,13 +179,13 @@ def main():
             )
 
             if optimal_p is not None:
-                heatmap_data[i, j] = abs(optimal_p - 0.4)
+                heatmap_data[i, j] = abs(optimal_p - 3865)
             else:
                 heatmap_data[i, j] = np.nan
 
     # Plot the results
     plot_heatmap_grid(
-        "Distance of Optimal p from 0.4",
+        "Distance of Optimal p from 0.3865",
         heatmap_data,
         regm2_values,
         regm1_values,

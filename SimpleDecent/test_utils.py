@@ -473,7 +473,7 @@ class UtilsSparse:
         return G, log
 
     def mirror_descent_unbalanced(
-        self, numItermax=1000, step_size=0.0001, stopThr=1e-4, gamma=1.0, patience=100
+        self, numItermax=1000, step_size=0.0001, stopThr=1e-6, gamma=1.0, patience=100
     ):
         """
         Solves the unbalanced OT problem using mirror descent with exponential updates.
