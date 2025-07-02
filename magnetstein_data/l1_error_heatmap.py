@@ -16,8 +16,10 @@ from SimpleDecent.test_utils import (
     warmstart_sparse,
     UtilsSparse,
     signif_features,
+    dia_matrix
 )
-from wasserstein import NMRSpectrum
+from wasserstein import NMRSpectrum, Spectrum
+from binsearch_estimation import binsearch_p
 
 # experiment settings
 protons_dict = {
@@ -50,7 +52,7 @@ METHOD = "mirror_descent"  # or "lbfgsb"
 
 
 # construct data for one experiment and p
-def construct_data(exp: str, N: int, C: int, p: float):
+def construct_data(exp: str, N: int):
     folder = folders[exp]
     # load mix spectrum and downsample
     mix_arr = np.loadtxt(folder / "preprocessed_mix.csv", delimiter=",")
@@ -66,124 +68,42 @@ def construct_data(exp: str, N: int, C: int, p: float):
         )
         comps.append(signif_features(comp_spec, N))
 
-    # mixture vector a
-    a = np.array([inten for _, inten in mix_spec.confs])
-    # build b on mix support
-    comp_maps = [{freq: inten for freq, inten in comp.confs} for comp in comps]
-    b = np.array(
-        [
-            p * comp_maps[0].get(freq, 0) + (1 - p) * comp_maps[1].get(freq, 0)
-            for freq, _ in mix_spec.confs
-        ]
-    )
-
-    v1 = np.array([freq for freq, _ in mix_spec.confs])
-    v2 = v1.copy()
-    M = multidiagonal_cost(v1, v2, C)
-    c = reg_distribiution(len(a), C)
-    return a, b, c, M
+    return mix_spec, comps
 
 
-# compute cost for a single p (top-level for pickling)
-def compute_cost(args):
-    exp, p, N, C, reg, regm1, regm2, max_iter, gamma, step = args
-
-    a, b, c, M = construct_data(exp, N, C, p)
-    G0 = warmstart_sparse(a, b, C)
-    sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
-
-    if METHOD == "lbfgsb":
-        _, G = sparse.lbfgsb_unbalanced(numItermax=max_iter)
-    else:
-        _, G = sparse.mirror_descent_unbalanced(
-            numItermax=max_iter,
-            gamma=gamma,
-            step_size=step,
-            stopThr=1e-6,
-            patience=100,
-        )
-
-    # --- Filter only integer offsets from G dict ---
-    G_offsets = []
-    G_data = []
-    for key, diag in G.items():
-        try:
-            off = int(key)
-        except (ValueError, TypeError):
-            continue
-        G_offsets.append(off)
-        G_data.append(diag)
-
-    transport_cost = sparse.sparse_dot(G_data, G_offsets)
-    rm1 = sparse.marg_tv_sparse_rm1(G_data, G_offsets)
-    rm2 = sparse.marg_tv_sparse_rm2(G_data, G_offsets)
-
-    cost = transport_cost + rm1 / regm1 + rm2 / regm2
-    return cost, p
-
-
-# find best p for one experiment
-def find_best_p(
+# average L1 error across experiments for given hyperparameters
+def avg_l1_error(
+    mix,
+    spectra,
     exp: str,
     N: int,
     C: int,
     reg: float,
     regm1: float,
     regm2: float,
-    p_values: np.ndarray,
     max_iter: int,
     gamma: float,
-    step: float,
 ):
-    tasks = [(exp, p, N, C, reg, regm1, regm2, max_iter, gamma, step) for p in p_values]
-    best_cost, best_p = np.inf, p_values[0]
-    with ProcessPoolExecutor(
-        max_workers=min(multiprocessing.cpu_count(), 12)
-    ) as executor:
-        futures = [executor.submit(compute_cost, t) for t in tasks]
-        for future in as_completed(futures):
-            cost, p = future.result()
-            if cost < best_cost:
-                best_cost, best_p = cost, p
-    return best_p
-
-
-# average L1 error across experiments for given hyperparameters
-def avg_l1_error(
-    regm1: float,
-    regm2: float,
-    N: int,
-    C: int,
-    reg: float,
-    max_iter: int,
-    gamma: float,
-    step: float,
-    num_p: int,
-    p_span: float,
-):
-    errors = []
-    for exp, true_p in ground_truth.items():
-        low = max(0, true_p - p_span)
-        high = min(1, true_p + p_span)
-        p_vals = np.linspace(low, high, num_p)
-        p_hat = find_best_p(exp, N, C, reg, regm1, regm2, p_vals, max_iter, gamma, step)
-        errors.append(abs(p_hat - true_p) + abs((1 - p_hat) - (1 - true_p)))
-    return sum(errors) / len(errors)
+    true_p = ground_truth[exp]
+    p_hat = binsearch_p(mix, spectra, exp, N, C, reg, regm1, regm2, max_iter, gamma)[0]
+    # print(f"Experiment: {exp}, regm1: {regm1}, regm2: {regm2}, p_hat: {p_hat:.4f}, true_p: {true_p:.4f}")
+    # calculate L1 error
+    return abs(p_hat - true_p)
 
 
 # wrapper for hyperparam pairs
 def process_pair(args):
-    regm1, regm2, N, C, reg, max_iter, gamma, step, num_p, p_span = args
-    return (regm1, regm2), avg_l1_error(
-        regm1, regm2, N, C, reg, max_iter, gamma, step, num_p, p_span
+    mix, spectra, exp, N, C, reg, r1, r2, max_iter, gamma = args
+    return (r1, r2), avg_l1_error(
+        mix, spectra, exp, N, C, reg, r1, r2, max_iter, gamma
     )
 
 
 # plot heatmap
-def plot_heatmap(data, xvals, yvals, N, C, reg):
+def plot_heatmap(exp, data, xvals, yvals, N, C, reg):
     fig, ax = plt.subplots(figsize=(11, 11))
     im = ax.imshow(data, origin="lower", cmap="viridis_r")
-    ax.set_title(f"N={N}, C={C}, reg={reg} — Avg L1/2 Error")
+    ax.set_title(f"N={N}, C={C}, reg={reg} — L1 Error")
     ax.set_xlabel("regm2")
     ax.set_ylabel("regm1")
     ax.set_xticks(range(len(xvals)))
@@ -192,41 +112,50 @@ def plot_heatmap(data, xvals, yvals, N, C, reg):
     ax.set_yticklabels([f"{v:.3f}" for v in yvals])
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
-            ax.text(j, i, f"{data[i, j] / 2:.4f}", ha="center", va="center", fontsize=8)
+            ax.text(j, i, f"{data[i, j]:.4f}", ha="center", va="center", fontsize=8)
     ax.figure.colorbar(im, ax=ax, label="L1 Error")
     ax.set_aspect("equal")
     plt.tight_layout()
-    out = Path("plots/l1_error_heatmaps")
+    out = Path(f"plots/l1_error_heatmaps/{exp}")
     out.mkdir(parents=True, exist_ok=True)
     plt.savefig(out / "avg_l1_error_heatmap.png")
     plt.close()
 
-
 # main
 def main():
-    N, C = 1000, 20
-    reg, max_iter = 1.5, 1000
-    step = 0.001
-    gamma = 1.0 - (20.0 / max_iter)
-    num_p, p_span = 24, 0.1
-    regm1_vals = np.linspace(0.1, 10, 3)
-    regm2_vals = np.linspace(0.1, 10, 3)
-    grid = np.zeros((len(regm1_vals), len(regm2_vals)))
-    tasks = [
-        (r1, r2, N, C, reg, max_iter, gamma, step, num_p, p_span)
-        for r1 in regm1_vals
-        for r2 in regm2_vals
-    ]
-    with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
-        for (r1, r2), val in tqdm(
-            executor.map(process_pair, tasks),
-            total=len(tasks),
-            desc="Hyperparam search",
-        ):
+    N, C = 500, 20
+    reg, max_iter = 1.5, 400
+    gamma = 1.0 - (10.0 / max_iter)
+    regm1_vals = np.linspace(20, 240, 6)
+    regm2_vals = np.linspace(20, 240, 6)
+
+    
+    for exp in ground_truth.keys():
+        if exp == "experiment_6" or exp == "experiment_1":
+            continue
+        print(f"Processing {exp}...")
+        mix, spectra = construct_data(exp, N)
+
+        grid = np.zeros((len(regm1_vals), len(regm2_vals)))
+        tasks = [
+            (mix, spectra, exp, N, C, reg, r1, r2, max_iter, gamma)
+            for r1 in regm1_vals
+            for r2 in regm2_vals
+        ]
+        results = []
+        with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as executor:
+            futures = [
+                executor.submit(process_pair, task) for task in tasks
+            ]
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Processing"
+            ):
+                results.append(future.result())
+        for (r1, r2), val in results:
             i = np.where(regm1_vals == r1)[0][0]
             j = np.where(regm2_vals == r2)[0][0]
             grid[i, j] = val
-    plot_heatmap(grid, regm2_vals, regm1_vals, N, C, reg)
+        plot_heatmap(exp, grid, regm2_vals, regm1_vals, N, C, reg)
 
 
 if __name__ == "__main__":

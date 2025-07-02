@@ -57,10 +57,10 @@ def derivative_estimate(mix, spectra, N, C, G0, reg, regm1, regm2, ratio, eps, m
         p_signs[i] = np.sign(logp["total_cost"] - logm["total_cost"])
     return p_signs
 
-def binsearch_p(mix, spectra, exp_num, N, C, reg=1.5, regm1=230, regm2=115, max_iter=1000, iter=10, eps=1*1e-2):
-    if n_features is not None:
-        mix = signif_features(mix, 2 * N)
-        spectra = [signif_features(s, N) for s in spectra]
+def binsearch_p(mix, spectra, exp_num, N, C, reg=1.5, regm1=230, regm2=115, max_iter=1000, gamma=0.98, iter=10, eps=1*1e-2):
+    # if N is not None:
+    #     mix = signif_features(mix, 2 * N)
+    #     spectra = [signif_features(s, N) for s in spectra]
 
     ratio = np.array(
         ground_truth_molar_proportions[exp_num]
@@ -68,7 +68,7 @@ def binsearch_p(mix, spectra, exp_num, N, C, reg=1.5, regm1=230, regm2=115, max_
     a, b, c, M = construct_data(mix, spectra, N, C, ratio)
     _G0 = warmstart_sparse(a, b, C)
     sparse = UtilsSparse(a, b, c, _G0, M, reg, regm1, regm2)
-    _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
+    _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter, gamma=gamma)
     G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 
     ratio = np.array(1 / len(spectra) * np.ones(len(spectra)))
@@ -76,6 +76,7 @@ def binsearch_p(mix, spectra, exp_num, N, C, reg=1.5, regm1=230, regm2=115, max_
     step = 1 / (len(spectra) * len(spectra))
 
     for _ in range(iter):
+        # print(f"Current ratio: {ratio}")
         p_signs = derivative_estimate(mix, spectra, N, C, G0, reg, regm1, regm2, ratio, eps, max_iter)
         plus_count = np.sum(p_signs > 0)
         minus_count = np.sum(p_signs < 0)
@@ -158,10 +159,10 @@ experiments_folders = {
 }
 
 # parameters
-n_features_list = np.linspace(200, 70400, num=20, dtype=int)
+# n_features_list = np.linspace(200, 70400, num=20, dtype=int)
 # n_features_list = np.logspace(np.log2(200), np.log2(70400), num=20, dtype=int, base=2)
 
-print(f"Using n_features_list: {n_features_list}")
+# print(f"Using n_features_list: {n_features_list}")
 # add variant index and ground truth proportions
 variant = 3
 ground_truth_molar_proportions = {
@@ -205,54 +206,58 @@ ground_truth_molar_proportions = {
     "experiment_11": [0.4855, 0.2427, 0.2718],
 }
 
-all_results = []
-for n_features in n_features_list:
-    print(f"Running experiments with n_features={n_features}")
-    results = []
-    for exp_num, folder in experiments_folders.items():
-        num = exp_num.split("_")[1]
+def main():
+    all_results = []
+    for n_features in n_features_list:
+        print(f"Running experiments with n_features={n_features}")
+        results = []
+        for exp_num, folder in experiments_folders.items():
+            num = exp_num.split("_")[1]
 
-        # load mix (special cases 4,9,10)
-        if exp_num == "experiment_10":
-            mix_file = f"preprocessed_mix_variant_{variant + 1}.csv"
-        elif num in ["9", "4"]:
-            mix_file = f"preprocessed_exp{num}_mix.csv"
-        else:
-            mix_file = "preprocessed_mix.csv"
-        mix_path = os.path.join(folder, mix_file)
-        mix_arr = np.loadtxt(mix_path, delimiter=",")
-        mix_spec = NMRSpectrum(confs=list(zip(mix_arr[:, 0], mix_arr[:, 1])))
-
-        # load component spectra (special cases 4,9,10)
-        comps = []
-        for i in range(len(components_dictionary[exp_num])):
+            # load mix (special cases 4,9,10)
             if exp_num == "experiment_10":
-                comp_file = f"preprocessed_variant_{variant + 1}_comp{i}.csv"
+                mix_file = f"preprocessed_mix_variant_{variant + 1}.csv"
             elif num in ["9", "4"]:
-                comp_file = f"preprocessed_exp{num}_comp{i}.csv"
+                mix_file = f"preprocessed_exp{num}_mix.csv"
             else:
-                comp_file = f"preprocessed_comp{i}.csv"
-            data = np.loadtxt(os.path.join(folder, comp_file), delimiter=",")
-            comps.append(
-                NMRSpectrum(
-                    confs=list(zip(data[:, 0], data[:, 1])),
-                    protons=protons_dictionary[exp_num][i],
-                )
-            )
+                mix_file = "preprocessed_mix.csv"
+            mix_path = os.path.join(folder, mix_file)
+            mix_arr = np.loadtxt(mix_path, delimiter=",")
+            mix_spec = NMRSpectrum(confs=list(zip(mix_arr[:, 0], mix_arr[:, 1])))
 
-        # estimate
-        p = binsearch_p(
-            mix=mix_spec,
-            spectra=comps,
-            exp_num=exp_num,
-            N=n_features,
-            C=20,
-            reg=1.5,
-            regm1=230,
-            regm2=115,
-            max_iter=1000,
-            iter=10,
-        )
-        print(f"Estimated proportions for {exp_num}: {p}")
+            # load component spectra (special cases 4,9,10)
+            comps = []
+            for i in range(len(components_dictionary[exp_num])):
+                if exp_num == "experiment_10":
+                    comp_file = f"preprocessed_variant_{variant + 1}_comp{i}.csv"
+                elif num in ["9", "4"]:
+                    comp_file = f"preprocessed_exp{num}_comp{i}.csv"
+                else:
+                    comp_file = f"preprocessed_comp{i}.csv"
+                data = np.loadtxt(os.path.join(folder, comp_file), delimiter=",")
+                comps.append(
+                    NMRSpectrum(
+                        confs=list(zip(data[:, 0], data[:, 1])),
+                        protons=protons_dictionary[exp_num][i],
+                    )
+                )
+
+            # estimate
+            p = binsearch_p(
+                mix=mix_spec,
+                spectra=comps,
+                exp_num=exp_num,
+                N=n_features,
+                C=20,
+                reg=1.5,
+                regm1=230,
+                regm2=115,
+                max_iter=1000,
+                iter=10,
+            )
+            print(f"Estimated proportions for {exp_num}: {p}")
+            break
         break
-    break
+
+if __name__ == "__main__":
+    main()
