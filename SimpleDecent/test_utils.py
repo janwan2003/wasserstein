@@ -536,6 +536,11 @@ class UtilsSparse:
         log["total_cost"] = val_prev
         log["cost"] = self.sparse_dot(G, G_offsets)
 
+        rm1 = self.marg_tv_sparse_rm1(G, G_offsets)
+        rm2 = self.marg_tv_sparse_rm2(G, G_offsets)
+
+        log["final_distance"] = log["cost"] + rm1 / self.reg_m1 + rm2 / self.reg_m2
+
         return G, log
 
 
@@ -784,7 +789,11 @@ def test_sparse_mirror_descent(
     transport_cost = sparse.sparse_dot(G, sparse.offsets)
     regularization_term = sparse.reg_kl_sparse(G, sparse.offsets)
     marginal_penalty = sparse.marg_tv_sparse(G, sparse.offsets)
-    final_distance = transport_cost + marginal_penalty / (reg_m1 + reg_m2)
+
+    rm1 = sparse.marg_tv_sparse_rm1(G, sparse.offsets)
+    rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)
+
+    final_distance = transport_cost + rm1 / reg_m1 + rm2 / reg_m2
     log_s["final_distance"] = final_distance
     if debug:
         emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
