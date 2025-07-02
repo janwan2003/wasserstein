@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-# METHOD = "mirror_descent"
-METHOD = "lbfgsb"
+METHOD = "mirror_descent"
+# METHOD = "lbfgsb"
 
 
 def construct_data(N, C):
@@ -45,15 +45,15 @@ def construct_data(N, C):
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 1000
+N = 300
 C = 20
-max_iter = 3000
+max_iter = 1000
 
 # Data
 print("Constructing transport plan...")
 
-v1, v2, a, b, c, M, _G0 = construct_data(N, C)
-sparse = UtilsSparse(a, b, c, _G0, M, reg, regm1, regm2)
+v1, v2, a, b, c, M, G0 = construct_data(N, C)
+sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
 _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
 G = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 
@@ -61,7 +61,7 @@ if METHOD == "lbfgsb":
     save_path = "marginals_lbfgsb"
     print("Using LBFGSB method.")
     # okazuje sie ze nasz warmstart slabo dziala dla lbfgsb wiec trzeba sie poluzyc tym od md
-    sparse = UtilsSparse(a, b, c, G, M, reg, regm1, regm2)
+    sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
     _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
     G = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 else:
@@ -123,11 +123,11 @@ axs[2, 1].set_ylabel("Delta Mass")
 
 # title
 plt.suptitle(
-    f"(2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2}, maxiter={max_iter})",
+    f"(2N={2 * N}, C={C}, λ={reg}, τ_1={regm1}, τ_2={regm2}, p={0.4})",
     fontsize=16,
 )
 
-plt.tight_layout()
+plt.tight_layout(rect=[0, 0, 1, 0.96])
 
 output_path = f"plots/{save_path}/marginals_comparison_with_deltas.png"
 plt.savefig(output_path, dpi=300)

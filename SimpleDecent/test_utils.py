@@ -365,14 +365,14 @@ class UtilsSparse:
 
         return np.sum(G_flat * np.log(G_flat / C_flat + 1e-16)) + np.sum(
             C_flat - G_flat
-        )
+        ) * self.reg
 
     def grad_kl_sparse(self, G_data, G_offsets):
         """Gradient of KL divergence for sparse matrix"""
         G_flat = flatten_multidiagonal(G_data, G_offsets)
         C_flat = flatten_multidiagonal(self.c_data, G_offsets)
 
-        grad_flat = np.log(G_flat / C_flat + 1e-16)
+        grad_flat = (np.log(G_flat / C_flat + 1e-16) + 1) * self.reg
         return reconstruct_multidiagonal(grad_flat, G_offsets, self.m) * self.reg
 
     def marg_tv_sparse(self, G_data, G_offsets):
@@ -473,7 +473,7 @@ class UtilsSparse:
         return G, log
 
     def mirror_descent_unbalanced(
-        self, numItermax=1000, step_size=0.0001, stopThr=1e-6, gamma=1.0, patience=100
+        self, numItermax=1000, step_size=0.0001, stopThr=1e-6, gamma=1.0, patience=50
     ):
         """
         Solves the unbalanced OT problem using mirror descent with exponential updates.

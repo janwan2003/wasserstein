@@ -14,9 +14,10 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import os
+import ot
 
-# METHOD = "mirror_descent"
-METHOD = "lbfgsb"
+METHOD = "mirror_descent"
+# METHOD = "lbfgsb"
 
 
 def construct_data(N, C, p):
@@ -40,14 +41,14 @@ def construct_data(N, C, p):
 
     c = reg_distribiution(2 * N, C)
 
-    return a, b, c, M
+    return a, b, c, M, v1, v2
 
 
 # Parameters
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 400
+N = 300
 C = 20
 max_iter = 1000
 p_values = np.linspace(0.3, 0.7, 32)
@@ -55,7 +56,7 @@ p_values = np.linspace(0.3, 0.7, 32)
 # Construct warmstart
 print("Constructing warmstart...")
 
-a, b, c, M = construct_data(N, C, 0.5)
+a, b, c, M, _, _ = construct_data(N, C, 0.3865)
 _G0 = warmstart_sparse(a, b, C)
 sparse = UtilsSparse(a, b, c, _G0, M, reg, regm1, regm2)
 _G0, _ = sparse.mirror_descent_unbalanced(numItermax=max_iter)
@@ -65,9 +66,9 @@ if METHOD == "lbfgsb":
     save_path = "p_curves_lbfgsb"
     print("Using LBFGSB method.")
     # okazuje sie ze nasz warmstart slabo dziala dla lbfgsb wiec trzeba sie poluzyc tym od md
-    sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
-    _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
-    G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
+    # sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
+    # _G0, _ = sparse.lbfgsb_unbalanced(numItermax=max_iter)
+    # G0 = dia_matrix((_G0, sparse.offsets), shape=(sparse.n, sparse.m), dtype=np.float64)
 else:
     save_path = "p_curves_md"
     print("Using Mirror Descent method.")
@@ -87,6 +88,8 @@ metrics_s1 = {
     "Regularization Term": new_grid(),
     "Marginal Penalty": new_grid(),
     "Marginal Penalty Normalized": new_grid(),
+    "Total Cost Normalized": new_grid(),
+    "EMD": new_grid(),
 }
 
 os.makedirs(f"plots/{save_path}", exist_ok=True)
@@ -98,7 +101,8 @@ results = []
 
 def process_wrapper(arg_tuple):
     i, p = arg_tuple
-    a, b, c, M = construct_data(N, C, p)
+    a, b, c, M, v1, v2 = construct_data(N, C, p)
+    # G0 = warmstart_sparse(a, b, C)
     sparse = UtilsSparse(a, b, c, G0, M, reg, regm1, regm2)
 
     if METHOD == "lbfgsb":
@@ -112,6 +116,7 @@ def process_wrapper(arg_tuple):
     reg_val = sparse.reg_kl_sparse(G, sparse.offsets)
     marg_rm1 = sparse.marg_tv_sparse_rm1(G, sparse.offsets)
     marg_rm2 = sparse.marg_tv_sparse_rm2(G, sparse.offsets)
+    emd = ot.emd2_1d(x_a=v1, x_b=v2, a=a, b=b, metric="euclidean")
 
     return (
         i,
@@ -121,6 +126,8 @@ def process_wrapper(arg_tuple):
             "Regularization Term": reg_val,
             "Marginal Penalty": marg_rm1 + marg_rm2,
             "Marginal Penalty Normalized": marg_rm1 / regm1 + marg_rm2 / regm2,
+            "Total Cost Normalized": tc + reg_val / reg + marg_rm1 / regm1 + marg_rm2 / regm2,
+            "EMD": emd
         },
     )
 
@@ -145,13 +152,25 @@ for i, metrics in results:
 # Plot curves
 def plot_metric_curve(metric_name, y_vals, x_vals):
     plt.figure(figsize=(10, 6))
-    plt.plot(x_vals, y_vals, marker="o")
+
+    plt.plot(x_vals, y_vals, marker="o", label=metric_name)
+
+    # If metric is EMD, also plot Total Cost
+    if metric_name == "EMD":
+        plt.plot(x_vals, metrics_s1["Total Cost Normalized"], marker="x", linestyle="--", label="Total Cost Normalized")
+        title_metric = "EMD and Total Cost (Normalized)"
+        ylabel = "Value"
+    else:
+        title_metric = metric_name
+        ylabel = metric_name
+
     plt.title(
-        f"Metric: {metric_name} vs p (2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2})"
+        f"Metric: {title_metric} vs p (2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2})"
     )
     plt.xlabel("p")
-    plt.ylabel(metric_name)
+    plt.ylabel(ylabel)
     plt.grid(True)
+    plt.legend()
     plt.savefig(f"plots/{save_path}/{metric_name.lower().replace(' ', '_')}.png")
     plt.close()
 
