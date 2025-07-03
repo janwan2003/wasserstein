@@ -48,10 +48,10 @@ def construct_data(N, C, p):
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 300
+N = 4000
 C = 20
-max_iter = 1000
-p_values = np.linspace(0.3, 0.7, 32)
+max_iter = 500
+p_values = np.linspace(0.3, 0.7, 36)
 
 # Construct warmstart
 print("Constructing warmstart...")
@@ -83,7 +83,7 @@ def new_grid():
 
 
 metrics_s1 = {
-    "Total Cost": new_grid(),
+    "Total Transport": new_grid(),
     "Transport Cost": new_grid(),
     "Regularization Term": new_grid(),
     "Marginal Penalty": new_grid(),
@@ -121,7 +121,7 @@ def process_wrapper(arg_tuple):
     return (
         i,
         {
-            "Total Cost": tc + reg_val + marg_rm1 + marg_rm2,
+            "Total Transport": tc + reg_val + marg_rm1 + marg_rm2,
             "Transport Cost": tc,
             "Regularization Term": reg_val,
             "Marginal Penalty": marg_rm1 + marg_rm2,
@@ -151,28 +151,35 @@ for i, metrics in results:
 
 # Plot curves
 def plot_metric_curve(metric_name, y_vals, x_vals):
-    plt.figure(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8), dpi=300)
 
-    plt.plot(x_vals, y_vals, marker="o", label=metric_name)
+    ax.plot(x_vals, y_vals, marker="o", label=metric_name)
 
-    # If metric is EMD, also plot Total Cost
     if metric_name == "EMD":
-        plt.plot(x_vals, metrics_s1["Total Cost Normalized"], marker="x", linestyle="--", label="Total Cost Normalized")
+        ax.plot(
+            x_vals,
+            metrics_s1["Total Cost Normalized"],
+            marker="x",
+            linestyle="--",
+            label="Total Cost Normalized"
+        )
         title_metric = "EMD and Total Cost (Normalized)"
         ylabel = "Value"
     else:
         title_metric = metric_name
         ylabel = metric_name
 
-    plt.title(
-        f"Metric: {title_metric} vs p (2N={2 * N}, C={C}, reg={reg}, regm1={regm1}, regm2={regm2})"
-    )
-    plt.xlabel("p")
-    plt.ylabel(ylabel)
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"plots/{save_path}/{metric_name.lower().replace(' ', '_')}.png")
-    plt.close()
+    ax.set_title(f"{title_metric} for (C={C}, λ={reg}, τ₁={regm1}, τ₂={regm2})")
+    ax.set_xlabel("p")
+    ax.set_ylabel(ylabel)
+    ax.grid(True)
+    ax.legend()
+
+    fname = metric_name.lower().replace(" ", "_")
+    fig.savefig(f"plots/{save_path}/{fname}.png", bbox_inches="tight", dpi=300)
+    # Optional: also save PDF
+    fig.savefig(f"plots/{save_path}/{fname}.pdf", bbox_inches="tight", dpi=300)
+    plt.close(fig)
 
 
 for metric in metrics_s1:
