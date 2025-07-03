@@ -363,9 +363,10 @@ class UtilsSparse:
         G_flat = flatten_multidiagonal(G_data, G_offsets)
         C_flat = flatten_multidiagonal(self.c_data, G_offsets)
 
-        return np.sum(G_flat * np.log(G_flat / C_flat + 1e-16)) + np.sum(
-            C_flat - G_flat
-        ) * self.reg
+        return (
+            np.sum(G_flat * np.log(G_flat / C_flat + 1e-16))
+            + np.sum(C_flat - G_flat) * self.reg
+        )
 
     def grad_kl_sparse(self, G_data, G_offsets):
         """Gradient of KL divergence for sparse matrix"""
@@ -542,6 +543,28 @@ class UtilsSparse:
         log["final_distance"] = log["cost"] + rm1 / self.reg_m1 + rm2 / self.reg_m2
 
         return G, log
+
+    def joint_mirror_descent(self, nu_matrix, eta_G, eta_p, max_iter=1000, tol=1e-6):
+        p = np.ones(nu_matrix.shape[0]) / nu_matrix.shape[0]
+        self.b = nu_matrix.T.dot(p)
+        offsets = self.offsets
+        G_flat = flatten_multidiagonal(self.G0_sparse.data, offsets)
+        prev = None
+        for _ in range(max_iter):
+            val, grad_flat = self.func_sparse(G_flat)
+            G_flat *= np.exp(-eta_G * grad_flat)
+            G_flat /= G_flat.sum()
+            G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
+            col = self.sparse_col_sum(G_data, offsets)
+            grad_p = -self.reg_m2 * nu_matrix.dot(np.sign(col - self.b))
+            p *= np.exp(-eta_p * grad_p)
+            p /= p.sum()
+            self.b = nu_matrix.T.dot(p)
+            if prev is not None and abs(val - prev) / abs(prev) < tol:
+                break
+            prev = val
+        G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
+        return dia_matrix((G_data, offsets), shape=(self.m, self.n)), p
 
 
 class UtilsDense:
