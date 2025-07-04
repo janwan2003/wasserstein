@@ -48,9 +48,9 @@ def construct_data(N, C, p):
 regm1 = 230
 regm2 = 115
 reg = 1.5
-N = 4000
+N = 2500
 C = 20
-max_iter = 500
+max_iter = 1000
 p_values = np.linspace(0.3, 0.7, 36)
 
 # Construct warmstart
