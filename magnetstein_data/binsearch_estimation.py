@@ -159,7 +159,7 @@ experiments_folders = {
 }
 
 # parameters
-# n_features_list = np.linspace(200, 70400, num=20, dtype=int)
+n_features_list = np.linspace(200, 70400, num=20, dtype=int)
 # n_features_list = np.logspace(np.log2(200), np.log2(70400), num=20, dtype=int, base=2)
 
 # print(f"Using n_features_list: {n_features_list}")

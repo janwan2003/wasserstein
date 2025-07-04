@@ -13,6 +13,7 @@ from scipy.optimize import minimize, Bounds
 from typing import List
 from ot.backend import get_backend
 import ot
+from tqdm import trange
 
 sys.path.append(os.path.abspath(".."))
 from wasserstein import Spectrum, NMRSpectrum
@@ -544,28 +545,103 @@ class UtilsSparse:
 
         return G, log
 
-    def joint_mirror_descent(self, nu_matrix, eta_G, eta_p, max_iter=1000, tol=1e-6):
-        p = np.ones(nu_matrix.shape[0]) / nu_matrix.shape[0]
-        self.b = nu_matrix.T.dot(p)
-        offsets = self.offsets
-        G_flat = flatten_multidiagonal(self.G0_sparse.data, offsets)
-        prev = None
-        for _ in range(max_iter):
-            val, grad_flat = self.func_sparse(G_flat)
-            G_flat *= np.exp(-eta_G * grad_flat)
+    # def joint_mirror_descent(self, nu_matrix, eta_G, eta_p, max_iter=1000, tol=1e-6):
+    #     p = np.ones(nu_matrix.shape[0]) / nu_matrix.shape[0]
+    #     self.b = nu_matrix.T.dot(p)
+    #     offsets = self.offsets
+    #     G_flat = flatten_multidiagonal(self.G0_sparse.data, offsets)
+    #     prev = None
+    #     for _ in range(max_iter):
+    #         val, grad_flat = self.func_sparse(G_flat)
+    #         G_flat *= np.exp(-eta_G * grad_flat)
+    #         G_flat /= G_flat.sum()
+    #         G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
+    #         col = self.sparse_col_sum(G_data, offsets)
+    #         grad_p = -self.reg_m2 * nu_matrix.dot(np.sign(col - self.b))
+    #         p *= np.exp(-eta_p * grad_p)
+    #         p /= p.sum()
+    #         self.b = nu_matrix.T.dot(p)
+    #         if prev is not None and abs(val - prev) / abs(prev) < tol:
+    #             break
+    #         prev = val
+    #     G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
+    #     return dia_matrix((G_data, offsets), shape=(self.m, self.n)), p
+
+    def scalar(self, s1, s2, p):
+        ret = []
+        for (x1, y1), (x2, y2) in zip(s1, s2):
+            ret.append((x1, y1 * p[0]))
+            ret.append((x2, y2 * p[1]))
+        ret.sort()
+        
+        # Extract y values only
+        y_values = [y for _, y in ret]
+        return y_values
+    
+    # def get_nus(self, s1, s2):
+    #     tagged_s1 = [(v, p, 's1') for v, p in s1]
+    #     tagged_s2 = [(v, p, 's2') for v, p in s2]
+
+    #     combined = tagged_s1 + tagged_s2
+
+    #     p_v1 = [(v, p) if source == 's1' else (v, 0) for v, p, source in combined]
+    #     p_v2 = [(v, p) if source == 's2' else (v, 0) for v, p, source in combined]
+    #     p_v1.sort(key=lambda x: x[0])
+    #     p_v2.sort(key=lambda x: x[0])
+
+    #     p_v1 = np.array([p for _, p in p_v1])
+    #     p_v2 = np.array([p for _, p in p_v2])
+
+    #     return [p_v1, p_v2]
+
+    def joint_md(self, s_list, eta_G, eta_p, max_iter, tol=1e-6):
+        n = len(s_list)
+        p = np.ones(n) / n
+        
+        nus = get_nus(s_list)
+        
+        G_data = self.G0_sparse.data
+        G_flat = flatten_multidiagonal(self.G0_sparse.data, self.offsets)
+        
+        for i in range(max_iter):
+            # Update G
+            _, grad = self.func_sparse(G_flat)
+            G_flat *= np.exp(-eta_G * grad)
             G_flat /= G_flat.sum()
-            G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
-            col = self.sparse_col_sum(G_data, offsets)
-            grad_p = -self.reg_m2 * nu_matrix.dot(np.sign(col - self.b))
+            
+            # Update p
+            col_sums = self.sparse_col_sum(G_data, self.offsets)
+            sign_diff = np.sign(col_sums - self.b)
+            grad_p = -self.reg_m2 * np.array([np.dot(nu_i, sign_diff) for nu_i in nus])
             p *= np.exp(-eta_p * grad_p)
             p /= p.sum()
-            self.b = nu_matrix.T.dot(p)
-            if prev is not None and abs(val - prev) / abs(prev) < tol:
-                break
-            prev = val
-        G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
-        return dia_matrix((G_data, offsets), shape=(self.m, self.n)), p
+            
+            # Update b
+            self.b = sum(nu_i * p_i for nu_i, p_i in zip(nus, p))
+            
+            if i % 20 == 0:
+                print(p)
 
+        G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
+        return dia_matrix((G_data, self.offsets), shape=(self.m, self.n)), p
+
+def get_nus(s_list):
+    tagged_s = []
+    for i, s in enumerate(s_list):
+        tagged_s.extend([(v, p, f's{i+1}') for v, p in s])
+    
+    unique_v = sorted({v for v, _, _ in tagged_s})
+    
+    nus = [np.zeros(len(unique_v)) for _ in s_list]
+    
+    v_to_idx = {v: idx for idx, v in enumerate(unique_v)}
+    
+    for v, p, source in tagged_s:
+        idx = v_to_idx[v]
+        src_idx = int(source[1:]) - 1
+        nus[src_idx][idx] = p
+    
+    return nus
 
 class UtilsDense:
     """
@@ -845,6 +921,59 @@ def test_sparse_mirror_descent(
     return G, log_s
 
 
+def test_joint_md(
+    N,
+    C,
+    p,
+    reg,
+    reg_m1,
+    reg_m2,
+    eta_G,
+    eta_p,
+    # gamma=0.9,
+    max_iter=1000,
+):
+    spectra, mix = load_data()
+
+    # x = [p for _, p in mix.confs if p > 5*1e-5]
+    # print(sum(x))
+    # print(len(x))
+    # return
+    spectra[0] = signif_features(spectra[0], N)
+    spectra[1] = signif_features(spectra[1], N)
+
+
+    ratio = np.array([p, 1 - p])
+    mix_aprox = Spectrum.ScalarProduct(
+        [spectra[0], spectra[1]], ratio
+    )
+    mix_aprox.normalize()
+
+    unique_v = sorted({v for spectrum in spectra for v, _ in spectrum.confs})
+    total_unique_v = len(unique_v)
+    
+    mix_og = signif_features(mix, total_unique_v)
+
+    nus = get_nus([si.confs for si in spectra])
+
+    a = np.array([p for _, p in mix_og.confs])
+    b = sum(nu_i * p_i for nu_i, p_i in zip(nus, ratio))
+
+    v1 = np.array([v for v, _ in mix_og.confs])
+    v2 = unique_v
+
+    print(len(v1), len(v2))
+
+    M = multidiagonal_cost(v1, v2, C)
+    warmstart = warmstart_sparse(a, b, C)
+    # print("Warmstart shape: ", warmstart.shape)
+    c = reg_distribiution(total_unique_v, C)
+
+    sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2)
+    confs = [spectrum.confs for spectrum in spectra]
+    sparse.joint_md(confs, eta_G, eta_p, max_iter)
+
+
 def test_ws_distance(
     N,
     C,
@@ -966,12 +1095,14 @@ def find_optimal_reg_marginals(
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    reg_a, reg_b = 50, 50
+    reg_m1, reg_m2 = 230, 115
     reg = 1.5
-    N = 400
-    C = 15
+    N = 2500
+    C = 40
     max_iter = 1000
-    step_size = 0.0005
+    eta_G = 1e-3
+    eta_p = 5*1e-4
+    # step_size = 0.0005
 
     # Uncomment the desired function to run
     # test_sparse(N, C, 0.46, reg, reg_a, reg_b, max_iter=max_iter, debug=True)
@@ -989,11 +1120,14 @@ if __name__ == "__main__":
     #         step_size=step_size,
     #         debug=True,
     #     )
-    test_sparse_mirror_descent(
-        N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
-    )
+    # test_sparse_mirror_descent(
+    #     N, C, 0.4, reg, reg_a, reg_b, max_iter=max_iter, step_size=step_size, debug=True
+    # )
     # run_comparison_experiment()
 
     # Uncomment to find optimal parameters
-    find_optimal_reg()
+    # find_optimal_reg()
+
     # find_optimal_reg_marginals(reg=1.5)
+
+    _, _ = test_joint_md(N, C, 0.5, reg, reg_m1, reg_m2, eta_G, eta_p, max_iter)
