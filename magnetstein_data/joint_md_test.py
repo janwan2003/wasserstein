@@ -56,9 +56,10 @@ def load_data():
     return spectra, mix
 
 def test_joint_md(
+    spectra,
+    mix,
     N,
     C,
-    p, # startowe p
     reg,
     reg_m1,
     reg_m2,
@@ -67,17 +68,9 @@ def test_joint_md(
     # gamma=0.9,
     max_iter=1000,
 ):
-    spectra, mix = load_data()
+    spectra = [signif_features(spectrum, N) for spectrum in spectra]
 
-    spectra[0] = signif_features(spectra[0], N)
-    spectra[1] = signif_features(spectra[1], N)
-
-
-    ratio = np.array([p, 1 - p])
-    mix_aprox = Spectrum.ScalarProduct(
-        [spectra[0], spectra[1]], ratio
-    )
-    mix_aprox.normalize()
+    ratio = np.ones(len(spectra)) / len(spectra)
 
     unique_v = sorted({v for spectrum in spectra for v, _ in spectrum.confs})
     total_unique_v = len(unique_v)
@@ -99,9 +92,10 @@ def test_joint_md(
     c = reg_distribiution(total_unique_v, C)
 
     sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2)
-    confs = [spectrum.confs for spectrum in spectra]
-    G, p = sparse.joint_md(confs, eta_G, eta_p, max_iter)
+    G, p = sparse.joint_md(nus, eta_G, eta_p, max_iter)
     
     print("final p: ", p)
 
-test_joint_md(1000, 20, 0.5, 1.5, 230, 115, 1e-3, 5*1e-4, 1000)
+
+spectra, mix = load_data()
+test_joint_md(spectra, mix, 1000, 20, 1.5, 230, 115, 1e-3, 5*1e-4, 1000)
