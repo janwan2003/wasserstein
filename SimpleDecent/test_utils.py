@@ -545,39 +545,17 @@ class UtilsSparse:
 
         return G, log
 
-    # def joint_mirror_descent(self, nu_matrix, eta_G, eta_p, max_iter=1000, tol=1e-6):
-    #     p = np.ones(nu_matrix.shape[0]) / nu_matrix.shape[0]
-    #     self.b = nu_matrix.T.dot(p)
-    #     offsets = self.offsets
-    #     G_flat = flatten_multidiagonal(self.G0_sparse.data, offsets)
-    #     prev = None
-    #     for _ in range(max_iter):
-    #         val, grad_flat = self.func_sparse(G_flat)
-    #         G_flat *= np.exp(-eta_G * grad_flat)
-    #         G_flat /= G_flat.sum()
-    #         G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
-    #         col = self.sparse_col_sum(G_data, offsets)
-    #         grad_p = -self.reg_m2 * nu_matrix.dot(np.sign(col - self.b))
-    #         p *= np.exp(-eta_p * grad_p)
-    #         p /= p.sum()
-    #         self.b = nu_matrix.T.dot(p)
-    #         if prev is not None and abs(val - prev) / abs(prev) < tol:
-    #             break
-    #         prev = val
-    #     G_data = reconstruct_multidiagonal(G_flat, offsets, self.m)
-    #     return dia_matrix((G_data, offsets), shape=(self.m, self.n)), p
-
     def scalar(self, s1, s2, p):
         ret = []
         for (x1, y1), (x2, y2) in zip(s1, s2):
             ret.append((x1, y1 * p[0]))
             ret.append((x2, y2 * p[1]))
         ret.sort()
-        
+
         # Extract y values only
         y_values = [y for _, y in ret]
         return y_values
-    
+
     # def get_nus(self, s1, s2):
     #     tagged_s1 = [(v, p, 's1') for v, p in s1]
     #     tagged_s2 = [(v, p, 's2') for v, p in s2]
@@ -594,54 +572,111 @@ class UtilsSparse:
 
     #     return [p_v1, p_v2]
 
-    def joint_md(self, s_list, eta_G, eta_p, max_iter, tol=1e-6):
+    def _compute_p_gradient(self, G_data, nus):
+        """
+        Compute the gradient of the objective function with respect to mixing proportions p.
+
+        Parameters:
+            G_data (np.array): Diagonal data of the transport plan matrix
+            nus (List[np.array]): List of spectral distributions for each component
+
+        Returns:
+            np.array: Gradient vector for mixing proportions
+        """
+        col_sums = self.sparse_col_sum(G_data, self.offsets)
+        sign_diff = np.sign(col_sums - self.b)
+        return -self.reg_m2 * np.array([np.dot(nu_i, sign_diff) for nu_i in nus])
+
+    def joint_md(
+        self, s_list, eta_G, eta_p, max_iter, tol=1e-6, gamma=1.0, patience=50
+    ):
+        """
+        Joint mirror descent optimization for transport plan and mixing proportions.
+
+        Simultaneously optimizes the transport plan G and mixing proportions p using
+        mirror descent with exponential updates. The algorithm alternates between
+        updating G (transport plan) and p (mixing proportions) while maintaining
+        the probability simplex constraints.
+
+        Parameters:
+            s_list (List): List of spectral configurations for each component
+            eta_G (float): Learning rate for transport plan updates
+            eta_p (float): Learning rate for mixing proportion updates
+            max_iter (int): Maximum number of iterations
+            tol (float): Convergence tolerance for relative change in objective
+            gamma (float): Learning rate decay factor (applied each iteration)
+            patience (int): Number of iterations with no improvement before stopping
+
+        Returns:
+            tuple: (G, p) where G is the optimal transport plan as dia_matrix and
+                   p is the optimal mixing proportions as np.array
+        """
         n = len(s_list)
         p = np.ones(n) / n
-        
+
         nus = get_nus(s_list)
-        
-        G_data = self.G0_sparse.data
         G_flat = flatten_multidiagonal(self.G0_sparse.data, self.offsets)
-        
+
+        prev_val = None
+        stalled_iterations = 0
+
         for i in range(max_iter):
-            # Update G
-            _, grad = self.func_sparse(G_flat)
+            # Update transport plan G
+            val, grad = self.func_sparse(G_flat)
             G_flat *= np.exp(-eta_G * grad)
             G_flat /= G_flat.sum()
-            
-            # Update p
-            col_sums = self.sparse_col_sum(G_data, self.offsets)
-            sign_diff = np.sign(col_sums - self.b)
-            grad_p = -self.reg_m2 * np.array([np.dot(nu_i, sign_diff) for nu_i in nus])
+
+            # Update mixing proportions p
+            G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
+            grad_p = self._compute_p_gradient(G_data, nus)
             p *= np.exp(-eta_p * grad_p)
             p /= p.sum()
-            
-            # Update b
+
+            # Update target distribution b based on new mixing proportions
             self.b = sum(nu_i * p_i for nu_i, p_i in zip(nus, p))
-            
+
+            # Check convergence
+            if prev_val is not None:
+                rel_change = abs(val - prev_val) / max(abs(prev_val), 1e-10)
+                if rel_change < tol:
+                    stalled_iterations += 1
+                else:
+                    stalled_iterations = 0
+
+                if stalled_iterations >= patience:
+                    break
+
+            prev_val = val
+
+            # Update learning rates
+            eta_G *= gamma
+            eta_p *= gamma
+
             if i % 20 == 0:
-                print(p)
+                print(f"Iteration {i}: p = {np.round(p, 4)}")
 
         G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
         return dia_matrix((G_data, self.offsets), shape=(self.m, self.n)), p
 
+
 def get_nus(s_list):
     tagged_s = []
     for i, s in enumerate(s_list):
-        tagged_s.extend([(v, p, f's{i+1}') for v, p in s])
-    
+        tagged_s.extend([(v, p, f"s{i + 1}") for v, p in s])
+
     unique_v = sorted({v for v, _, _ in tagged_s})
-    
+
     nus = [np.zeros(len(unique_v)) for _ in s_list]
-    
+
     v_to_idx = {v: idx for idx, v in enumerate(unique_v)}
-    
+
     for v, p, source in tagged_s:
         idx = v_to_idx[v]
         src_idx = int(source[1:]) - 1
         nus[src_idx][idx] = p
-    
+
     return nus
+
 
 class UtilsDense:
     """
@@ -942,16 +977,13 @@ def test_joint_md(
     spectra[0] = signif_features(spectra[0], N)
     spectra[1] = signif_features(spectra[1], N)
 
-
     ratio = np.array([p, 1 - p])
-    mix_aprox = Spectrum.ScalarProduct(
-        [spectra[0], spectra[1]], ratio
-    )
+    mix_aprox = Spectrum.ScalarProduct([spectra[0], spectra[1]], ratio)
     mix_aprox.normalize()
 
     unique_v = sorted({v for spectrum in spectra for v, _ in spectrum.confs})
     total_unique_v = len(unique_v)
-    
+
     mix_og = signif_features(mix, total_unique_v)
 
     nus = get_nus([si.confs for si in spectra])
@@ -1101,7 +1133,7 @@ if __name__ == "__main__":
     C = 40
     max_iter = 1000
     eta_G = 1e-3
-    eta_p = 5*1e-4
+    eta_p = 5 * 1e-4
     # step_size = 0.0005
 
     # Uncomment the desired function to run
@@ -1130,4 +1162,5 @@ if __name__ == "__main__":
 
     # find_optimal_reg_marginals(reg=1.5)
 
+    _, _ = test_joint_md(N, C, 0.5, reg, reg_m1, reg_m2, eta_G, eta_p, max_iter)
     _, _ = test_joint_md(N, C, 0.5, reg, reg_m1, reg_m2, eta_G, eta_p, max_iter)

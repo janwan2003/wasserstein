@@ -2,6 +2,7 @@ import numpy as np
 from typing import List
 import sys
 import os
+
 sys.path.append(os.path.abspath(".."))
 from wasserstein import NMRSpectrum
 from SimpleDecent.test_utils import (
@@ -11,8 +12,9 @@ from SimpleDecent.test_utils import (
     reg_distribiution,
     warmstart_sparse,
     UtilsSparse,
-    get_nus
+    get_nus,
 )
+
 
 def load_data():
     components_names = ["Pinene", "Benzyl benzoate"]
@@ -27,7 +29,10 @@ def load_data():
     how_many_components = len(components_names)
     names = ["comp" + str(i) for i in range(how_many_components)]
 
-    files_with_components = [experiment + "preprocessed_comp0.csv", experiment + "preprocessed_comp1.csv"]
+    files_with_components = [
+        experiment + "preprocessed_comp0.csv",
+        experiment + "preprocessed_comp1.csv",
+    ]
     spectra = []
     for i in range(how_many_components):
         filename = files_with_components[i]
@@ -55,6 +60,7 @@ def load_data():
 
     return spectra, mix
 
+
 def test_joint_md(
     spectra,
     mix,
@@ -63,10 +69,12 @@ def test_joint_md(
     reg,
     reg_m1,
     reg_m2,
-    eta_G = 1e-3, # tym
-    eta_p = 5*1e-4, # i tym trzeba sie pobawic nie recze za defaulty
-    # gamma=0.9,
+    eta_G=1e-3,  # tym
+    eta_p=5 * 1e-4,  # i tym trzeba sie pobawic nie recze za defaulty
+    gamma=1.0,
     max_iter=1000,
+    tol=1e-6,
+    patience=50,
 ):
     spectra = [signif_features(spectrum, N) for spectrum in spectra]
 
@@ -74,7 +82,7 @@ def test_joint_md(
 
     unique_v = sorted({v for spectrum in spectra for v, _ in spectrum.confs})
     total_unique_v = len(unique_v)
-    
+
     mix_og = signif_features(mix, total_unique_v)
 
     nus = get_nus([si.confs for si in spectra])
@@ -92,10 +100,11 @@ def test_joint_md(
     c = reg_distribiution(total_unique_v, C)
 
     sparse = UtilsSparse(a, b, c, warmstart, M, reg, reg_m1, reg_m2)
-    G, p = sparse.joint_md(nus, eta_G, eta_p, max_iter)
-    
+    confs = [spectrum.confs for spectrum in spectra]
+    G, p = sparse.joint_md(confs, eta_G, eta_p, max_iter, tol, gamma, patience)
+
     print("final p: ", p)
 
 
 spectra, mix = load_data()
-test_joint_md(spectra, mix, 1000, 20, 1.5, 230, 115, 1e-3, 5*1e-4, 1000)
+test_joint_md(spectra, mix, 1000, 20, 1.5, 230, 115, 1e-3, 5 * 1e-4, 1.0, 1000)
