@@ -1,0 +1,3 @@
+experiment,method,l1_error,n_components,best_param1,best_param2
+experiment_6,Joint MD,0.0117091504076029,2,34.22222222222222,300.0
+experiment_6,Simple WS,0.0154394111865561,2,0.05,
