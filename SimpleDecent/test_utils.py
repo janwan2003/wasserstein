@@ -278,6 +278,94 @@ def signif_features(spectrum, n_features):
     return spectrum_signif
 
 
+def apply_spectrum_shift(spectrum: "NMRSpectrum", shift: float) -> "NMRSpectrum":
+    """
+    Apply a chemical shift to a spectrum by translating all frequencies.
+
+    Parameters:
+        spectrum (NMRSpectrum): Input spectrum
+        shift (float): Shift amount to apply (positive shifts right, negative shifts left)
+
+    Returns:
+        NMRSpectrum: New spectrum with shifted frequencies
+    """
+    shifted_confs = [(v + shift, p) for v, p in spectrum.confs]
+    shifted_spectrum = NMRSpectrum(confs=shifted_confs, protons=spectrum.protons)
+    if hasattr(spectrum, "label"):
+        shifted_spectrum.label = spectrum.label
+    return shifted_spectrum
+
+
+def align_spectrum_shift(
+    spectrum: "NMRSpectrum",
+    reference: "NMRSpectrum",
+    max_shift_units: int = 30,
+    n_features: int = 1000,
+) -> "NMRSpectrum":
+    """
+    Find optimal chemical shift for a spectrum to minimize Wasserstein distance with reference.
+
+    Parameters:
+        spectrum (NMRSpectrum): Spectrum to align
+        reference (NMRSpectrum): Reference spectrum to align to
+        max_shift_units (int): Maximum shift in spectrum measurement units (searches from -max to +max)
+        n_features (int): Number of most significant features to use for alignment
+
+    Returns:
+        NMRSpectrum: Optimally shifted spectrum
+    """
+    # Extract significant features for alignment computation
+    spectrum_reduced = signif_features(spectrum, n_features)
+    reference_reduced = signif_features(reference, n_features)
+
+    # Calculate the typical frequency step in the reference spectrum
+    ref_frequencies = sorted([v for v, _ in reference_reduced.confs])
+    if len(ref_frequencies) < 2:
+        print("  Warning: Not enough reference points for alignment, using no shift")
+        return spectrum
+
+    # Calculate frequency step as the median difference between consecutive frequencies
+    freq_diffs = [
+        ref_frequencies[i + 1] - ref_frequencies[i]
+        for i in range(len(ref_frequencies) - 1)
+    ]
+    freq_step = np.median(freq_diffs)
+
+    print(f"  Using frequency step: {freq_step:.6f} ppm")
+
+    # Create shift range: -max_shift_units to +max_shift_units in units of freq_step
+    shift_range = [i * freq_step for i in range(-max_shift_units, max_shift_units + 1)]
+
+    best_shift = 0.0
+    best_distance = float("inf")
+
+    for shift in shift_range:
+        # Apply shift to spectrum
+        shifted_spectrum = apply_spectrum_shift(spectrum_reduced, shift)
+
+        try:
+            # Calculate Wasserstein distance
+            ws_distance = reference_reduced.WSDistance(shifted_spectrum)
+
+            if ws_distance < best_distance:
+                best_distance = ws_distance
+                best_shift = shift
+
+        except Exception:
+            # Skip if Wasserstein distance calculation fails
+            continue
+
+    # Apply the optimal shift to the full spectrum
+    aligned_spectrum = apply_spectrum_shift(spectrum, best_shift)
+
+    shift_units = best_shift / freq_step if freq_step != 0 else 0
+    print(
+        f"  Optimal shift: {best_shift:.6f} ppm ({shift_units:.1f} units, WS distance: {best_distance:.6f})"
+    )
+
+    return aligned_spectrum
+
+
 # ------------------------------------------------------------------------------
 # Optimization Classes
 # ------------------------------------------------------------------------------
@@ -588,75 +676,88 @@ class UtilsSparse:
         return -self.reg_m2 * np.array([np.dot(nu_i, sign_diff) for nu_i in nus])
 
     def joint_md(
-        self, s_list, eta_G, eta_p, max_iter, tol=1e-6, gamma=1.0, patience=50
+        self,
+        s_list,
+        eta_G,
+        eta_p,
+        max_iter,
+        tol=1e-6,
+        gamma=1.0,
+        patience=50,
+        initial_proportions=None,
     ):
         """
-        Joint mirror descent optimization for transport plan and mixing proportions.
+        Joint mirror–descent optimisation of
+            • G  – sparse transport plan  (multidiagonal, flattened) and
+            • p  – mixture weights on the simplex.
 
-        Simultaneously optimizes the transport plan G and mixing proportions p using
-        mirror descent with exponential updates. The algorithm alternates between
-        updating G (transport plan) and p (mixing proportions) while maintaining
-        the probability simplex constraints.
-
-        Parameters:
-            s_list (List): List of spectral configurations for each component
-            eta_G (float): Learning rate for transport plan updates
-            eta_p (float): Learning rate for mixing proportion updates
-            max_iter (int): Maximum number of iterations
-            tol (float): Convergence tolerance for relative change in objective
-            gamma (float): Learning rate decay factor (applied each iteration)
-            patience (int): Number of iterations with no improvement before stopping
-
-        Returns:
-            tuple: (G, p) where G is the optimal transport plan as dia_matrix and
-                   p is the optimal mixing proportions as np.array
+        Gradient magnitudes are clipped to 1 each iteration, so a single
+        base learning-rate works across experiments.  Learning-rates decay
+        by `gamma` every step.  The loop stops when the objective has not
+        improved by more than `tol` for `patience` consecutive iterations.
         """
+        # ------------------------------------------------------------------
+        # initialisation
+        # ------------------------------------------------------------------
         n = len(s_list)
-        p = np.ones(n) / n
+        if initial_proportions is not None:
+            p = np.asarray(initial_proportions, dtype=float)
+            p /= p.sum()
+        else:
+            p = np.ones(n) / n  # uniform
 
-        nus = get_nus(s_list)
+        nus = get_nus(s_list)  # ν_i arrays
         G_flat = flatten_multidiagonal(self.G0_sparse.data, self.offsets)
 
         prev_val = None
         stalled_iterations = 0
 
-        for i in range(max_iter):
-            # Update transport plan G
-            val, grad = self.func_sparse(G_flat)
-            G_flat *= np.exp(-eta_G * grad)
+        # ------------------------------------------------------------------
+        # main loop
+        # ------------------------------------------------------------------
+        for it in range(max_iter):
+            # ---- 1. mirror update for G -----------------------------------
+            _, grad_G = self.func_sparse(G_flat)  # ∇_G F
+            grad_G /= np.max(np.abs(grad_G)) + 1e-16  # clip |grad|≤1
+            G_flat *= np.exp(-eta_G * grad_G)
             G_flat /= G_flat.sum()
 
-            # Update mixing proportions p
+            # ---- 2. mirror update for p -----------------------------------
+            #     need reconstructed sparse matrix for grad_p
             G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
-            grad_p = self._compute_p_gradient(G_data, nus)
+            grad_p = self._compute_p_gradient(G_data, nus)  # ∇_p F
+            grad_p /= np.max(np.abs(grad_p)) + 1e-16  # clip
             p *= np.exp(-eta_p * grad_p)
             p /= p.sum()
 
-            # Update target distribution b based on new mixing proportions
-            self.b = sum(nu_i * p_i for nu_i, p_i in zip(nus, p))
+            # update mixture target   b = Σ p_i ν_i
+            self.b = sum(p_i * nu_i for p_i, nu_i in zip(p, nus))
 
-            # Check convergence
+            # ---- 3. evaluate objective *after* both updates --------------
+            val, _ = self.func_sparse(G_flat)
+
+            # ---- 4. convergence / patience check -------------------------
             if prev_val is not None:
                 rel_change = abs(val - prev_val) / max(abs(prev_val), 1e-10)
-                if rel_change < tol:
-                    stalled_iterations += 1
-                else:
-                    stalled_iterations = 0
-
+                stalled_iterations = stalled_iterations + 1 if rel_change < tol else 0
                 if stalled_iterations >= patience:
                     break
-
             prev_val = val
 
-            # Update learning rates
+            # ---- 5. decay learning-rates ---------------------------------
             eta_G *= gamma
             eta_p *= gamma
 
-            if i % 20 == 0:
-                print(f"Iteration {i}: p = {np.round(p, 4)}")
+            # optional progress print
+            if it % 100 == 0:
+                print(f"Iter {it:4d}  obj {val:.3e}  p {np.round(p, 4)}")
 
+        # ------------------------------------------------------------------
+        # wrap-up: reconstruct sparse matrix and return
+        # ------------------------------------------------------------------
         G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
-        return dia_matrix((G_data, self.offsets), shape=(self.m, self.n)), p
+        G_opt = dia_matrix((G_data, self.offsets), shape=(self.m, self.n))
+        return G_opt, p
 
 
 def get_nus(s_list):

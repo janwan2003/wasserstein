@@ -10,11 +10,28 @@ from typing import List, Dict, Tuple
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
+import time
+
+# ─── Import Custom Modules ───────────────────────────────────────────────────────
+sys.path.append(os.path.abspath("."))
+sys.path.append(os.path.abspath("SimpleDecent"))
+sys.path.append(os.path.abspath("magnetstein_data"))
+
+from wasserstein import NMRSpectrum
+from SimpleDecent.test_utils import (
+    signif_features,
+    multidiagonal_cost,
+    reg_distribiution,
+    warmstart_sparse,
+    UtilsSparse,
+    get_nus,  # Add alignment function
+)
+from magnetstein_data.simple_wasserstein_descent import estimate_proportions_wasserstein
 
 warnings.filterwarnings("ignore")
 
 # ─── Output Configuration ────────────────────────────────────────────────────────
-OUTPUT_FOLDER = "experiment_plots_final_2"
+OUTPUT_FOLDER = "experiment_plots_final_4"
 
 # ─── Centralized Hyperparameter Configuration ───────────────────────────────────
 HYPERPARAMETERS = {
@@ -22,30 +39,159 @@ HYPERPARAMETERS = {
     "joint_md": {
         "C": 30,  # Bandwidth parameter for multidiagonal cost
         "reg": 1.5,  # KL regularization strength
-        "eta_G": 1e-2,  # Learning rate for transport plan
-        "eta_p": 2e-3,  # Learning rate for proportions
-        "max_iter": 5000,  # Maximum iterations
-        "gamma": 0.99,  # Learning rate decay
-        "tol": 1e-5,  # Convergence tolerance
-        "patience": 30,  # Early stopping patience
-        "total_features": 5000,  # Total features to extract
+        "eta_G": 0.5,  # Learning rate for transport plan
+        "eta_p": 0.05,  # Learning rate for proportions
+        "max_iter": 2000,  # Maximum iterations
+        "gamma": 0.995,  # Learning rate decay
+        "tol": 1e-4,  # Convergence tolerance
+        "patience": 50,  # Early stopping patience
+        "total_features": 3000,  # Total features to extract
+        "mass_preservation_target": 90.0,  # Percentage of mass to preserve
     },
     # Simple Wasserstein Parameters
     "simple_ws": {
         "learning_rate": 0.05,  # Fixed learning rate
-        "gamma": 0.99,  # Learning rate decay
+        "gamma": 0.995,  # Learning rate decay
         "T": 5000,  # Maximum iterations
-        "patience": 60,  # Early stopping patience
+        "patience": 80,  # Early stopping patience
         "tol": 1e-5,  # Convergence tolerance
-        "total_features": 5000,  # Total features to extract
+        "total_features": 3000,  # Total features to extract
+        "mass_preservation_target": 90.0,  # Percentage of mass to preserve
     },
     # Parameter grid search ranges
     "parameter_search": {
-        "reg_m1_range": (1, 300),  # (min, max) for τ₁
-        "reg_m2_range": (1, 300),  # (min, max) for τ₂
-        "n_points": 10,  # Grid resolution
+        "reg_m1_range": (2, 102),  # (min, max) for τ₁
+        "reg_m2_range": (2, 102),  # (min, max) for τ₂
+        "n_points": 3,  # Grid resolution
     },
 }
+
+
+def calculate_features_for_mass_target(
+    spectrum: NMRSpectrum, target_mass_pct: float
+) -> Dict:
+    """
+    Calculate how many features are needed to preserve exactly target_mass_pct% of total mass.
+
+    Parameters:
+        spectrum (NMRSpectrum): Input spectrum
+        target_mass_pct (float): Target mass preservation percentage (0-100)
+
+    Returns:
+        Dict: Contains required_features, actual_mass_pct, total_features, target_mass_pct
+    """
+    # Sort features by intensity (descending)
+    spectrum_confs_sorted = sorted(spectrum.confs, key=lambda x: x[1], reverse=True)
+    original_mass = sum(intensity for _, intensity in spectrum.confs)
+    target_mass = original_mass * (target_mass_pct / 100.0)
+
+    cumulative_mass = 0
+    required_features = 0
+
+    for i, (_, intensity) in enumerate(spectrum_confs_sorted):
+        cumulative_mass += intensity
+        required_features = i + 1
+
+        if cumulative_mass >= target_mass:
+            break
+
+    # Calculate actual mass preservation achieved
+    actual_mass_pct = (
+        (cumulative_mass / original_mass * 100) if original_mass > 0 else 0.0
+    )
+
+    return {
+        "required_features": required_features,
+        "actual_mass_pct": actual_mass_pct,
+        "total_features": len(spectrum.confs),
+        "target_mass_pct": target_mass_pct,
+        "efficiency": required_features / len(spectrum.confs),
+    }
+
+
+def calculate_dynamic_features(
+    spectra: List[NMRSpectrum], mix: NMRSpectrum, target_mass_pct: float = 90.0
+) -> Dict:
+    """
+    Calculate the number of unique features needed to preserve target_mass_pct% for mix and all components.
+
+    Returns:
+        Dict: Contains feature analysis and the final unique feature count to use
+    """
+    print(f"Calculating features needed for {target_mass_pct}% mass preservation...")
+
+    # Calculate features needed for mixture
+    mix_analysis = calculate_features_for_mass_target(mix, target_mass_pct)
+    print(
+        f"  Mixture: {mix_analysis['required_features']} features for {mix_analysis['actual_mass_pct']:.1f}% mass"
+    )
+
+    # Calculate features needed for each component
+    component_analyses = []
+    for i, spectrum in enumerate(spectra):
+        comp_analysis = calculate_features_for_mass_target(spectrum, target_mass_pct)
+        comp_analysis["component_index"] = i
+        component_analyses.append(comp_analysis)
+        print(
+            f"  Component {i}: {comp_analysis['required_features']} features for {comp_analysis['actual_mass_pct']:.1f}% mass"
+        )
+
+    # Extract features from all spectra based on calculated requirements
+    mix_features_needed = mix_analysis["required_features"]
+    mix_confs_sorted = sorted(mix.confs, key=lambda x: x[1], reverse=True)
+    mix_top_features = set(v for v, _ in mix_confs_sorted[:mix_features_needed])
+
+    component_top_features = set()
+    for i, spectrum in enumerate(spectra):
+        comp_features_needed = component_analyses[i]["required_features"]
+        comp_confs_sorted = sorted(spectrum.confs, key=lambda x: x[1], reverse=True)
+        comp_features = set(v for v, _ in comp_confs_sorted[:comp_features_needed])
+        component_top_features.update(comp_features)
+
+    # Calculate unique features across all spectra
+    all_unique_features = mix_top_features.union(component_top_features)
+    unique_features_count = len(all_unique_features)
+
+    print(f"  Total unique features needed: {unique_features_count}")
+    print(
+        f"  Mix features: {len(mix_top_features)}, Component features: {len(component_top_features)}"
+    )
+    print(
+        f"  Overlap: {len(mix_top_features.intersection(component_top_features))} features"
+    )
+
+    return {
+        "mix_analysis": mix_analysis,
+        "component_analyses": component_analyses,
+        "mix_top_features": mix_top_features,
+        "component_top_features": component_top_features,
+        "all_unique_features": all_unique_features,
+        "unique_features_count": unique_features_count,
+        "target_mass_pct": target_mass_pct,
+    }
+
+
+def extract_features_from_unique_set(
+    spectrum: NMRSpectrum, unique_features: set
+) -> NMRSpectrum:
+    """
+    Extract features from spectrum that are in the unique_features set.
+    """
+    # Filter spectrum to only include features in the unique set
+    filtered_confs = [
+        (v, intensity) for v, intensity in spectrum.confs if v in unique_features
+    ]
+
+    # Sort by intensity (descending) to maintain signif_features behavior
+    filtered_confs_sorted = sorted(filtered_confs, key=lambda x: x[1], reverse=True)
+
+    # Create new spectrum and normalize
+    reduced_spectrum = NMRSpectrum(
+        confs=filtered_confs_sorted, protons=spectrum.protons
+    )
+    reduced_spectrum.normalize()
+
+    return reduced_spectrum
 
 
 def get_hyperparameter_text() -> str:
@@ -57,7 +203,8 @@ def get_hyperparameter_text() -> str:
         f"Joint MD: C={joint_params['C']}, reg={joint_params['reg']}, "
         f"η_G={joint_params['eta_G']:.0e}, η_p={joint_params['eta_p']:.0e}\n"
         f"Simple WS: lr={simple_params['learning_rate']}, "
-        f"γ={simple_params['gamma']}, T={simple_params['T']}"
+        f"γ={simple_params['gamma']}, T={simple_params['T']}\n"
+        f"Mass target: {joint_params['mass_preservation_target']}%"
     )
     return text
 
@@ -80,35 +227,20 @@ mpl.rcParams.update(
     }
 )
 
-# ─── Import Custom Modules ───────────────────────────────────────────────────────
-sys.path.append(os.path.abspath("."))
-sys.path.append(os.path.abspath("SimpleDecent"))
-sys.path.append(os.path.abspath("magnetstein_data"))
-
-from wasserstein import NMRSpectrum
-from SimpleDecent.test_utils import (
-    signif_features,
-    multidiagonal_cost,
-    reg_distribiution,
-    warmstart_sparse,
-    UtilsSparse,
-    get_nus,
-)
-from magnetstein_data.simple_wasserstein_descent import estimate_proportions_wasserstein
 
 # ─── Experimental Configurations ────────────────────────────────────────────────
 experiments_folders = {
     "experiment_1": "magnetstein_data/experiment_1_intensity_difference",
-    "experiment_2": "magnetstein_data/experiment_2_overlapping",
+    # "experiment_2": "magnetstein_data/experiment_2_overlapping",
     "experiment_6": "magnetstein_data/experiment_6_miniperfumes",
-    "experiment_7": "magnetstein_data/experiment_7_overlapping_and_intensity_difference",
-    "experiment_8": "magnetstein_data/experiment_8_different_solvents",
+    # "experiment_7": "magnetstein_data/experiment_7_overlapping_and_intensity_difference",
+    # "experiment_8": "magnetstein_data/experiment_8_different_solvents",
     "experiment_3": "magnetstein_data/experiment_3_perfumes_and_absent_components",
     "experiment_5": "magnetstein_data/experiment_5_metabolites",
-    "experiment_4": "magnetstein_data/experiment_9_and_4_shim",
-    "experiment_9": "magnetstein_data/experiment_9_and_4_shim",
-    "experiment_10": "magnetstein_data/experiment_10_bcaa",
-    "experiment_11": "magnetstein_data/experiment_11_real_food_product",
+    # "experiment_4": "magnetstein_data/experiment_9_and_4_shim",
+    # "experiment_9": "magnetstein_data/experiment_9_and_4_shim",
+    # "experiment_10": "magnetstein_data/experiment_10_bcaa",
+    # "experiment_11": "magnetstein_data/experiment_11_real_food_product",
 }
 
 components_dictionary = {
@@ -185,8 +317,8 @@ ground_truth_molar_proportions = {
 # ─── Data Loading Functions ──────────────────────────────────────────────────────
 def load_experiment_data(
     exp_num: str, variant: int = 3
-) -> Tuple[List[NMRSpectrum], NMRSpectrum]:
-    """Load spectra and mixture data for a given experiment."""
+) -> Tuple[List[NMRSpectrum], NMRSpectrum, Dict]:
+    """Load spectra and mixture data for a given experiment with dynamic feature calculation."""
     folder = experiments_folders[exp_num]
     num = exp_num.split("_")[1]
 
@@ -227,7 +359,11 @@ def load_experiment_data(
         comp.trim_negative_intensities()
         comp.normalize()
 
-    return comps, mix_spec
+    # Calculate dynamic features
+    target_mass_pct = HYPERPARAMETERS["joint_md"]["mass_preservation_target"]
+    feature_analysis = calculate_dynamic_features(comps, mix_spec, target_mass_pct)
+
+    return comps, mix_spec, feature_analysis
 
 
 def calculate_l1_error(estimated: List[float], ground_truth: List[float]) -> float:
@@ -242,36 +378,58 @@ def run_joint_md_with_params(
     reg_m1: float,
     reg_m2: float,
     total_features: int = None,
+    feature_analysis: Dict = None,
 ) -> Dict:
-    """Run joint mirror descent with specific parameters."""
+    """Run joint mirror descent with specific parameters and dynamic feature selection."""
     # Use centralized hyperparameters
     params = HYPERPARAMETERS["joint_md"]
     if total_features is None:
         total_features = params["total_features"]
 
     n_components = len(spectra)
-    features_per_comp = total_features // n_components
 
-    # Extract features
-    spectra_reduced = [
-        signif_features(spectrum, features_per_comp) for spectrum in spectra
-    ]
-    unique_v = sorted({v for spectrum in spectra_reduced for v, _ in spectrum.confs})
-    total_unique_v = len(unique_v)
-    mix_reduced = signif_features(mix, total_unique_v)
+    if feature_analysis is not None:
+        # Use dynamic feature calculation
+        unique_features = feature_analysis["all_unique_features"]
+        actual_features_used = len(unique_features)
 
-    # Initial setup
+        # Extract features using the unique feature set
+        spectra_reduced = [
+            extract_features_from_unique_set(spectrum, unique_features)
+            for spectrum in spectra
+        ]
+        mix_reduced = extract_features_from_unique_set(mix, unique_features)
+
+        print(f"Using {actual_features_used} dynamically calculated features")
+
+    else:
+        # Fallback to original method
+        features_per_comp = total_features // n_components
+
+        # Extract features
+        spectra_reduced = [
+            signif_features(spectrum, features_per_comp) for spectrum in spectra
+        ]
+        unique_v = sorted(
+            {v for spectrum in spectra_reduced for v, _ in spectrum.confs}
+        )
+        total_unique_v = len(unique_v)
+        mix_reduced = signif_features(mix, total_unique_v)
+        actual_features_used = total_unique_v
+
+    # Initial uniform proportions (no ground truth initialization)
     ratio = np.ones(n_components) / n_components
+
     nus = get_nus([si.confs for si in spectra_reduced])
     a = np.array([p for _, p in mix_reduced.confs])
     b = sum(nu_i * p_i for nu_i, p_i in zip(nus, ratio))
     v1 = np.array([v for v, _ in mix_reduced.confs])
-    v2 = unique_v
+    v2 = sorted({v for spectrum in spectra_reduced for v, _ in spectrum.confs})
 
     # Setup optimization using centralized parameters
     M = multidiagonal_cost(v1, v2, params["C"])
     warmstart = warmstart_sparse(a, b, params["C"])
-    c = reg_distribiution(total_unique_v, params["C"])
+    c = reg_distribiution(len(v2), params["C"])
     sparse = UtilsSparse(a, b, c, warmstart, M, params["reg"], reg_m1, reg_m2)
 
     try:
@@ -293,10 +451,11 @@ def run_joint_md_with_params(
                 "proportions": p_final.tolist(),
                 "cost": final_cost,
                 "success": True,
-                "features_used": total_unique_v,
+                "features_used": actual_features_used,
                 "hyperparameters": params.copy(),
                 "reg_m1": reg_m1,
                 "reg_m2": reg_m2,
+                "feature_analysis": feature_analysis,
             }
         else:
             return {"success": False, "error": "Invalid result format"}
@@ -309,8 +468,9 @@ def run_simple_wasserstein_with_params(
     mix: NMRSpectrum,
     learning_rate: float = None,
     total_features: int = None,
+    feature_analysis: Dict = None,
 ) -> Dict:
-    """Run simple Wasserstein with specific parameters."""
+    """Run simple Wasserstein with specific parameters and dynamic feature selection."""
     # Use centralized hyperparameters
     params = HYPERPARAMETERS["simple_ws"]
     if learning_rate is None:
@@ -319,32 +479,64 @@ def run_simple_wasserstein_with_params(
         total_features = params["total_features"]
 
     n_components = len(spectra)
-    features_per_comp = total_features // n_components
 
-    try:
-        p_final, _, scores, ws_dist, ws_uniform = estimate_proportions_wasserstein(
-            mix,
-            spectra,
-            learning_rate=learning_rate,
-            gamma=params["gamma"],
-            T=params["T"],
-            tol=params["tol"],
-            patience=params["patience"],
-            n_features=features_per_comp,
-        )
+    if feature_analysis is not None:
+        # Use dynamic feature calculation
+        unique_features = feature_analysis["all_unique_features"]
+        actual_features_used = len(unique_features)
 
-        return {
-            "proportions": p_final.tolist(),
-            "cost": ws_dist,
-            "ws_uniform": ws_uniform,
-            "iterations": len(scores),
-            "converged": len(scores) < params["T"],
-            "success": True,
-            "hyperparameters": params.copy(),
-            "learning_rate": learning_rate,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        # Extract features using the unique feature set
+        spectra_to_use = [
+            extract_features_from_unique_set(spectrum, unique_features)
+            for spectrum in spectra
+        ]
+        mix_to_use = extract_features_from_unique_set(mix, unique_features)
+
+        try:
+            p_final, _, scores, ws_dist, ws_uniform = estimate_proportions_wasserstein(
+                mix_to_use,
+                spectra_to_use,
+                learning_rate=learning_rate,
+                gamma=params["gamma"],
+                T=params["T"],
+                tol=params["tol"],
+                patience=params["patience"],
+                n_features=None,  # Features already extracted
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    else:
+        # Fallback to original method
+        features_per_comp = total_features // n_components
+        actual_features_used = total_features
+
+        try:
+            p_final, _, scores, ws_dist, ws_uniform = estimate_proportions_wasserstein(
+                mix,
+                spectra,
+                learning_rate=learning_rate,
+                gamma=params["gamma"],
+                T=params["T"],
+                tol=params["tol"],
+                patience=params["patience"],
+                n_features=features_per_comp,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {
+        "proportions": p_final.tolist(),
+        "cost": ws_dist,
+        "ws_uniform": ws_uniform,
+        "iterations": len(scores),
+        "converged": len(scores) < params["T"],
+        "success": True,
+        "features_used": actual_features_used,
+        "hyperparameters": params.copy(),
+        "learning_rate": learning_rate,
+        "feature_analysis": feature_analysis,
+    }
 
 
 # ─── Parameter Grid Generation (Parallel Worker Function) ────────────────────────
@@ -353,12 +545,14 @@ def process_parameter_combination(args):
     exp_num, reg_m1, reg_m2 = args
 
     try:
-        # Load data
-        spectra, mix = load_experiment_data(exp_num)
+        # Load data with dynamic feature calculation
+        spectra, mix, feature_analysis = load_experiment_data(exp_num)
         ground_truth = ground_truth_molar_proportions[exp_num]
 
-        # Run joint MD
-        result = run_joint_md_with_params(spectra, mix, reg_m1, reg_m2)
+        # Run joint MD with dynamic features
+        result = run_joint_md_with_params(
+            spectra, mix, reg_m1, reg_m2, feature_analysis=feature_analysis
+        )
         if result["success"]:
             l1_error = calculate_l1_error(result["proportions"], ground_truth)
             return {
@@ -372,6 +566,10 @@ def process_parameter_combination(args):
                 "proportions": result["proportions"],
                 "cost": result["cost"],
                 "success": True,
+                "features_used": result["features_used"],
+                "target_mass_pct": feature_analysis["target_mass_pct"]
+                if feature_analysis
+                else None,
             }
         else:
             return {"success": False, "error": result.get("error", "Unknown error")}
@@ -409,7 +607,7 @@ def generate_parameter_grid_results(exp_num: str, n_points: int = None) -> pd.Da
     results = []
 
     # Use parallel processing for parameter sweep
-    max_workers = min(mp.cpu_count() - 1, len(param_combinations))
+    max_workers = min(mp.cpu_count(), len(param_combinations))
     print(
         f"  Running {len(param_combinations)} parameter combinations with {max_workers} workers..."
     )
@@ -431,12 +629,12 @@ def generate_parameter_grid_results(exp_num: str, n_points: int = None) -> pd.Da
                     f"  Parameter combination reg_m1={reg_m1:.1f}, reg_m2={reg_m2:.1f} failed: {exc}"
                 )
 
-    # Add single Simple Wasserstein comparison with fixed parameters
+    # Add single Simple Wasserstein comparison with dynamic features
     try:
-        spectra, mix = load_experiment_data(exp_num)
+        spectra, mix, feature_analysis = load_experiment_data(exp_num)
         ground_truth = ground_truth_molar_proportions[exp_num]
         simple_result = run_simple_wasserstein_with_params(
-            spectra, mix, learning_rate=0.05
+            spectra, mix, learning_rate=0.05, feature_analysis=feature_analysis
         )
         if simple_result["success"]:
             l1_error = calculate_l1_error(simple_result["proportions"], ground_truth)
@@ -452,6 +650,8 @@ def generate_parameter_grid_results(exp_num: str, n_points: int = None) -> pd.Da
                     "proportions": simple_result["proportions"],
                     "cost": simple_result["cost"],
                     "success": True,
+                    "features_used": simple_result["features_used"],
+                    "target_mass_pct": feature_analysis["target_mass_pct"],
                 }
             )
     except Exception as e:
@@ -749,12 +949,25 @@ def create_method_comparison_chart(df: pd.DataFrame, exp_num: str):
     ax2.spines["top"].set_visible(False)
     ax2.spines["right"].set_visible(False)
 
-    # Add hyperparameter information
+    # Add hyperparameter and feature information
     hyperparams_text = get_hyperparameter_text()
+
+    # Add feature information if available
+    features_info = ""
+    if joint_best_row is not None and "features_used" in joint_best_row:
+        features_info = f"\nFeatures used: {joint_best_row['features_used']}"
+        if (
+            "target_mass_pct" in joint_best_row
+            and joint_best_row["target_mass_pct"] is not None
+        ):
+            features_info += f" (targeting {joint_best_row['target_mass_pct']}% mass)"
+
+    full_text = hyperparams_text + features_info
+
     fig.text(
         0.02,
         0.02,
-        hyperparams_text,
+        full_text,
         fontsize=9,
         bbox=dict(boxstyle="round,pad=0.3", fc="lightgray", alpha=0.8),
         verticalalignment="bottom",
@@ -980,10 +1193,10 @@ def create_summary_statistics(df: pd.DataFrame, exp_num: str):
     joint_data = df[df["method"] == "Joint MD"].copy()
     simple_data = df[df["method"] == "Simple WS"].copy()
 
-    # Create figure with extra space for hyperparameters
-    fig = plt.figure(figsize=(18, 14), constrained_layout=True)
+    # Create figure with extra space for hyperparameters - increased figure size for additional plot
+    fig = plt.figure(figsize=(20, 16), constrained_layout=True)
 
-    # Create a grid layout with space for hyperparameters
+    # Create a grid layout with space for hyperparameters - now 3x2 for 6 plots
     gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.2], hspace=0.3, wspace=0.2)
 
     # Main plots
@@ -1066,27 +1279,82 @@ def create_summary_statistics(df: pd.DataFrame, exp_num: str):
             transform=ax2.transAxes,
         )
 
-    # 3. Error trends across parameter ranges
+    # 3. Average L1 and L2 errors by reg_m1 and reg_m2 parameters
     if not joint_data.empty:
-        # Group by param1 and show trends
-        for param1_val in sorted(joint_data["param1"].unique())[
-            ::2
-        ]:  # Skip every other
-            subset = joint_data[joint_data["param1"] == param1_val].sort_values(
-                "param2"
-            )
-            if len(subset) > 1:
-                ax3.plot(
-                    subset["param2"],
-                    subset["l1_error"],
-                    "o-",
-                    alpha=0.7,
-                    label=f"τ₁ = {param1_val:.0f}",
+        # Calculate L2 error for joint data (if not already present)
+        if "l2_error" not in joint_data.columns:
+            # We need ground truth to calculate L2 error
+            ground_truth = ground_truth_molar_proportions[exp_num]
+            joint_data["l2_error"] = joint_data["proportions"].apply(
+                lambda props: np.sqrt(
+                    sum((p - g) ** 2 for p, g in zip(props, ground_truth))
                 )
-        ax3.set_xlabel("τ₂", fontsize=12)
-        ax3.set_ylabel("L₁ Error", fontsize=12)
-        ax3.set_title("Error Trends Across τ₂", fontsize=14, fontweight="bold")
-        ax3.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+            )
+
+        # Group by parameters and calculate mean errors
+        param_avg = (
+            joint_data.groupby(["param1", "param2"])
+            .agg({"l1_error": "mean", "l2_error": "mean"})
+            .reset_index()
+        )
+
+        # Create bar plot comparing L1 and L2 errors
+        x_pos = np.arange(len(param_avg))
+        width = 0.35
+
+        bars1 = ax3.bar(
+            x_pos - width / 2,
+            param_avg["l1_error"],
+            width,
+            label="L₁ Error",
+            alpha=0.8,
+            color="blue",
+        )
+        bars2 = ax3.bar(
+            x_pos + width / 2,
+            param_avg["l2_error"],
+            width,
+            label="L₂ Error",
+            alpha=0.8,
+            color="red",
+        )
+
+        # Add value labels on bars
+        for bar in bars1:
+            height = bar.get_height()
+            ax3.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.001,
+                f"{height:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+        for bar in bars2:
+            height = bar.get_height()
+            ax3.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.001,
+                f"{height:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+        # Create x-axis labels showing parameter combinations
+        param_labels = [
+            f"({row['param1']:.0f},{row['param2']:.0f})"
+            for _, row in param_avg.iterrows()
+        ]
+        ax3.set_xticks(x_pos)
+        ax3.set_xticklabels(param_labels, rotation=45, ha="right", fontsize=10)
+        ax3.set_xlabel("(τ₁, τ₂) Parameter Pairs", fontsize=12)
+        ax3.set_ylabel("Average Error", fontsize=12)
+        ax3.set_title(
+            "L₁ vs L₂ Error by Parameter Combination", fontsize=14, fontweight="bold"
+        )
+        ax3.legend()
         ax3.grid(True, alpha=0.3)
         ax3.spines["top"].set_visible(False)
         ax3.spines["right"].set_visible(False)
@@ -1402,6 +1670,9 @@ def create_cross_experiment_summary():
 
 # ─── Run Analysis for All Experiments ───────────────────────────────────────────
 if __name__ == "__main__":
+    # Start total timing
+    total_start_time = time.time()
+
     # Print hyperparameters at start
     print("=" * 60)
     print("HYPERPARAMETER CONFIGURATION")
@@ -1417,9 +1688,9 @@ if __name__ == "__main__":
 
     # Analyze each experiment
     for exp_num in experiments_folders.keys():
+        exp_start_time = time.time()
         try:
-            # Generate parameter grid results - Remove hardcoded n_points=30
-            # This will now use the centralized hyperparameter value
+            # Generate parameter grid results with dynamic features
             df = generate_parameter_grid_results(exp_num)
 
             if df.empty:
@@ -1436,21 +1707,32 @@ if __name__ == "__main__":
             # Save results
             df.to_csv(f"{OUTPUT_FOLDER}/{exp_num}/parameter_results.csv", index=False)
 
-            print(f"Completed analysis for {exp_num}")
+            exp_duration = time.time() - exp_start_time
+            print(
+                f"Completed analysis for {exp_num} in {exp_duration:.2f} seconds ({exp_duration / 60:.1f} minutes)"
+            )
         except Exception as e:
-            print(f"Error analyzing {exp_num}: {e}")
+            exp_duration = time.time() - exp_start_time
+            print(f"Error analyzing {exp_num} after {exp_duration:.2f} seconds: {e}")
             import traceback
 
             traceback.print_exc()
             continue
 
+    total_duration = time.time() - total_start_time
     print(
         f"Analysis complete! Check the {OUTPUT_FOLDER}/ directory for all visualizations."
+    )
+    print(
+        f"Total analysis time: {total_duration:.2f} seconds ({total_duration / 60:.1f} minutes)"
     )
 
     # Create summary comparison across all experiments
     print("\nCreating cross-experiment summary...")
+    summary_start_time = time.time()
     create_cross_experiment_summary()
+    summary_duration = time.time() - summary_start_time
+    print(f"Cross-experiment summary completed in {summary_duration:.2f} seconds")
 
     # Print final hyperparameter summary
     print("\n" + "=" * 60)
@@ -1462,3 +1744,8 @@ if __name__ == "__main__":
         for key, value in params.items():
             print(f"  {key}: {value}")
     print("=" * 60)
+
+    final_total_duration = time.time() - total_start_time
+    print(
+        f"\nTOTAL RUNTIME: {final_total_duration:.2f} seconds ({final_total_duration / 60:.1f} minutes)"
+    )
