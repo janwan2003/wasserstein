@@ -42,10 +42,10 @@ HYPERPARAMETERS = {
         "eta_G": 0.5,  # Learning rate for transport plan
         "eta_p": 0.05,  # Learning rate for proportions
         "max_iter": 2000,  # Maximum iterations
-        "gamma": 0.995,  # Learning rate decay
-        "tol": 1e-4,  # Convergence tolerance
-        "patience": 50,  # Early stopping patience
-        "total_features": 3000,  # Total features to extract
+        "gamma": 0.99,  # Learning rate decay
+        "tol": 5e-3,  # Convergence tolerance
+        "patience": 100,  # Early stopping patience
+        "total_features": None,  # Total features to extract
         "mass_preservation_target": 90.0,  # Percentage of mass to preserve
     },
     # Simple Wasserstein Parameters
@@ -55,14 +55,14 @@ HYPERPARAMETERS = {
         "T": 5000,  # Maximum iterations
         "patience": 80,  # Early stopping patience
         "tol": 1e-5,  # Convergence tolerance
-        "total_features": 3000,  # Total features to extract
+        "total_features": None,  # Total features to extract
         "mass_preservation_target": 90.0,  # Percentage of mass to preserve
     },
     # Parameter grid search ranges
     "parameter_search": {
         "reg_m1_range": (2, 102),  # (min, max) for τ₁
-        "reg_m2_range": (2, 102),  # (min, max) for τ₂
-        "n_points": 3,  # Grid resolution
+        "reg_m2_range": (2, 302),  # (min, max) for τ₂
+        "n_points": 11,  # Grid resolution
     },
 }
 
@@ -118,7 +118,7 @@ def calculate_dynamic_features(
     Returns:
         Dict: Contains feature analysis and the final unique feature count to use
     """
-    print(f"Calculating features needed for {target_mass_pct}% mass preservation...")
+    # print(f"Calculating features needed for {target_mass_pct}% mass preservation...")
 
     # Calculate features needed for mixture
     mix_analysis = calculate_features_for_mass_target(mix, target_mass_pct)
@@ -152,13 +152,13 @@ def calculate_dynamic_features(
     all_unique_features = mix_top_features.union(component_top_features)
     unique_features_count = len(all_unique_features)
 
-    print(f"  Total unique features needed: {unique_features_count}")
-    print(
-        f"  Mix features: {len(mix_top_features)}, Component features: {len(component_top_features)}"
-    )
-    print(
-        f"  Overlap: {len(mix_top_features.intersection(component_top_features))} features"
-    )
+    # print(f"  Total unique features needed: {unique_features_count}")
+    # print(
+    #     f"  Mix features: {len(mix_top_features)}, Component features: {len(component_top_features)}"
+    # )
+    # print(
+    #     f"  Overlap: {len(mix_top_features.intersection(component_top_features))} features"
+    # )
 
     return {
         "mix_analysis": mix_analysis,
@@ -231,16 +231,16 @@ mpl.rcParams.update(
 # ─── Experimental Configurations ────────────────────────────────────────────────
 experiments_folders = {
     "experiment_1": "magnetstein_data/experiment_1_intensity_difference",
-    # "experiment_2": "magnetstein_data/experiment_2_overlapping",
+    "experiment_2": "magnetstein_data/experiment_2_overlapping",
     "experiment_6": "magnetstein_data/experiment_6_miniperfumes",
-    # "experiment_7": "magnetstein_data/experiment_7_overlapping_and_intensity_difference",
-    # "experiment_8": "magnetstein_data/experiment_8_different_solvents",
+    "experiment_7": "magnetstein_data/experiment_7_overlapping_and_intensity_difference",
+    "experiment_8": "magnetstein_data/experiment_8_different_solvents",
     "experiment_3": "magnetstein_data/experiment_3_perfumes_and_absent_components",
     "experiment_5": "magnetstein_data/experiment_5_metabolites",
-    # "experiment_4": "magnetstein_data/experiment_9_and_4_shim",
-    # "experiment_9": "magnetstein_data/experiment_9_and_4_shim",
-    # "experiment_10": "magnetstein_data/experiment_10_bcaa",
-    # "experiment_11": "magnetstein_data/experiment_11_real_food_product",
+    "experiment_4": "magnetstein_data/experiment_9_and_4_shim",
+    "experiment_9": "magnetstein_data/experiment_9_and_4_shim",
+    "experiment_10": "magnetstein_data/experiment_10_bcaa",
+    "experiment_11": "magnetstein_data/experiment_11_real_food_product",
 }
 
 components_dictionary = {

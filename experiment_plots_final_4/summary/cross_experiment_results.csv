@@ -1,3 +1,23 @@
 experiment,method,l1_error,n_components,best_param1,best_param2
-experiment_4,Joint MD,0.356953024577014,5,2.0,102.0
+experiment_1,Joint MD,0.0081910204526909,2,12.0,32.0
+experiment_1,Simple WS,0.023450305937597,2,0.05,
+experiment_2,Joint MD,0.0132823634918404,2,2.0,212.0
+experiment_2,Simple WS,0.0380032620942583,2,0.05,
+experiment_6,Joint MD,0.0858633208338501,2,2.0,122.0
+experiment_6,Simple WS,0.111450735557517,2,0.05,
+experiment_7,Joint MD,0.0118480172217531,2,92.0,122.0
+experiment_7,Simple WS,0.1186049145443074,2,0.05,
+experiment_8,Joint MD,0.2919910378868664,2,12.0,2.0
+experiment_8,Simple WS,0.066806604051563,2,0.05,
+experiment_3,Joint MD,0.0392187035399371,4,52.0,302.0
+experiment_3,Simple WS,0.2450845525769265,4,0.05,
+experiment_5,Joint MD,0.3778995033262603,5,2.0,212.0
+experiment_5,Simple WS,0.383705507937643,5,0.05,
+experiment_4,Joint MD,0.2313494870230036,5,2.0,152.0
 experiment_4,Simple WS,0.3867266342064759,5,0.05,
+experiment_9,Joint MD,0.2442999100073125,5,2.0,302.0
+experiment_9,Simple WS,0.3889858201312168,5,0.05,
+experiment_10,Joint MD,0.0323036910157973,3,2.0,2.0
+experiment_10,Simple WS,0.3194417109206038,3,0.05,
+experiment_11,Joint MD,0.0844138710736383,3,12.0,272.0
+experiment_11,Simple WS,0.289174284352083,3,0.05,

@@ -299,8 +299,8 @@ HYPERPARAMETERS = {
     "joint_md": {
         "C": 30,
         "reg": 1.5,
-        "reg_m1": 150,
-        "reg_m2": 200,
+        "reg_m1": 40,
+        "reg_m2": 50,
         "eta_G": 0.5,
         "eta_p": 0.05,
         "max_iter": 1000,
