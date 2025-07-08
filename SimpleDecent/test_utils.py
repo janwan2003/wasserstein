@@ -572,7 +572,7 @@ class UtilsSparse:
 
     #     return [p_v1, p_v2]
 
-    def _compute_p_gradient(self, G_data, nus):
+    def compute_p_gradient(self, G_flat, nus):
         """
         Compute the gradient of the objective function with respect to mixing proportions p.
 
@@ -583,6 +583,7 @@ class UtilsSparse:
         Returns:
             np.array: Gradient vector for mixing proportions
         """
+        G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
         col_sums = self.sparse_col_sum(G_data, self.offsets)
         sign_diff = np.sign(col_sums - self.b)
         return -self.reg_m2 * np.array([np.dot(nu_i, sign_diff) for nu_i in nus])
@@ -599,7 +600,7 @@ class UtilsSparse:
         the probability simplex constraints.
 
         Parameters:
-            s_list (List): List of spectral configurations for each component
+            s_list (List): List of component spectra
             eta_G (float): Learning rate for transport plan updates
             eta_p (float): Learning rate for mixing proportion updates
             max_iter (int): Maximum number of iterations
@@ -627,8 +628,7 @@ class UtilsSparse:
             G_flat /= G_flat.sum()
 
             # Update mixing proportions p
-            G_data = reconstruct_multidiagonal(G_flat, self.offsets, self.m)
-            grad_p = self._compute_p_gradient(G_data, nus)
+            grad_p = self.compute_p_gradient(G_flat, nus)
             p *= np.exp(-eta_p * grad_p)
             p /= p.sum()
 
